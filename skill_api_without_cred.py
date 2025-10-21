@@ -15,7 +15,10 @@ from dotenv import load_dotenv
 # === Load environment variables ===
 load_dotenv()
 
-app = FastAPI(title="Skill Tracker API")
+app = FastAPI(
+    title="Skill Ageing API",
+    root_path="/skill-ageing"
+)
 
 import os
 print("🧩 TRACKER_API =", os.getenv("TRACKER_API"))
