@@ -257,7 +257,7 @@ def run_skill_analysis_from_list(job_list):
         "data": output
     }
 
-@app.get("/skill-ageing")
+@app.get("/")
 def analyze_skills(occupation: str = Query(...), source: str = Query(...)):
     try:
         # === Fetch data ===
@@ -598,7 +598,7 @@ def analyze_skills(occupation: str = Query(...), source: str = Query(...)):
     except Exception as e:
         return {"error": str(e)}
 
-@app.get("/skill-ageing-law-policy")
+@app.get("/law-policy")
 def analyze_law_policy_skills(
     keywords: str = Query(None, description="Comma-separated keywords to filter law/policies, e.g. AI,Data,Education"),
     max_publication_date: str = Query(None, description="Max publication date in YYYY-MM-DD format")
@@ -736,7 +736,7 @@ def analyze_law_policy_skills(
 
 
 
-@app.get("/ku-skill-ageing")
+@app.get("/ku")
 def analyze_ku_skills(
     start_date: str = Query(None, description="Start date in YYYY-MM format"),
     end_date: str = Query(None, description="End date in YYYY-MM format"),
@@ -830,7 +830,7 @@ def analyze_ku_skills(
     except Exception as e:
         return {"error": f"KU skill analysis failed: {str(e)}"}
 
-# @app.get("/ku-skill-ageing")
+# @app.get("/ku")
 # def analyze_ku_skills(
 #     start_date: str = Query(None, description="Start date in YYYY-MM format"),
 #     end_date: str = Query(None, description="End date in YYYY-MM format"),
@@ -971,7 +971,7 @@ import uuid
 from itertools import islice
 
 
-@app.get("/skill-ageing-courses")
+@app.get("/courses")
 def analyze_course_skills(
     keywords: str = Query(None, description="Keywords to filter courses"),
     min_creation_date: str = Query(None, description="Minimum creation date (YYYY-MM-DD)"),
@@ -1234,8 +1234,8 @@ def analyze_course_skills(
 #     return {"skill_biology_summary": biology_summary}
 #
 #
-# # === ROUTE 1: /skill-ageing ===
-# @app.get("/skill-ageing")
+# # === ROUTE 1: / ===
+# @app.get("/")
 # def analyze_skills(occupation: str = Query(...), source: str = Query(...)):
 #     API = os.getenv("TRACKER_API_URL")
 #     token = get_token()
@@ -1261,8 +1261,8 @@ def analyze_course_skills(
 #     return run_skill_analysis_from_list(all_items)
 #
 #
-# # === ROUTE 2: /skill-ageing-law-policy ===
-# @app.get("/skill-ageing-law-policy")
+# # === ROUTE 2: /law-policy ===
+# @app.get("/law-policy")
 # def analyze_law_policy_skills(
 #     keywords: str = Query(None, description="Comma-separated keywords, e.g. AI,Data,Education"),
 #     max_publication_date: str = Query(None, description="Max publication date in YYYY-MM-DD format")
