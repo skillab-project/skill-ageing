@@ -8,6 +8,6 @@ services:
       - TRACKER_API=https://skillab-tracker.csd.auth.gr/api
       - KU_API_URL=https://portal.skillab-project.eu/ku-detection
     ports:
-      - '8000:8000'
+      - '8002:8000'
     labels:
       io.portainer.accesscontrol.teams: skillab-all
