@@ -1,0 +1,13 @@
+services:
+  skill-ageing:
+    image: ${DOCKER_REG}${DOCKER_REPO}${APP_NAME}:${DOCKER_TAG}
+    build:
+      context: .
+    container_name: skill-ageing
+    environment:
+      - TRACKER_API=https://skillab-tracker.csd.auth.gr/api
+      - KU_API_URL=https://portal.skillab-project.eu/ku-detection
+    ports:
+      - '8000:8000'
+    labels:
+      io.portainer.accesscontrol.teams: skillab-all
