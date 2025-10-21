@@ -257,7 +257,7 @@ def run_skill_analysis_from_list(job_list):
         "data": output
     }
 
-@app.get("/")
+@app.get("/jobs")
 def analyze_skills(occupation: str = Query(...), source: str = Query(...)):
     try:
         # === Fetch data ===
@@ -1235,7 +1235,7 @@ def analyze_course_skills(
 #
 #
 # # === ROUTE 1: / ===
-# @app.get("/")
+# @app.get("/jobs")
 # def analyze_skills(occupation: str = Query(...), source: str = Query(...)):
 #     API = os.getenv("TRACKER_API_URL")
 #     token = get_token()
