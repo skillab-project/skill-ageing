@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 import os
 from dotenv import load_dotenv
+from ageing_forecasting import router as forecasting_router
 
 # === Load environment variables ===
 load_dotenv()
@@ -19,6 +20,7 @@ app = FastAPI(
     title="Skill Ageing API",
     root_path="/skill-ageing"
 )
+app.include_router(forecasting_router)
 
 import os
 print("🧩 TRACKER_API =", os.getenv("TRACKER_API"))

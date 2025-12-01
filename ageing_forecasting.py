@@ -1,25 +1,10 @@
-
-# ==========================================================
-#  SKILLAB Skill Intelligence API
-#  Module: Job Skill Timeline & Forecasting Preprocessing
-#  Endpoint: /api/analysis/jobs_ultra_forecasting
-# ==========================================================
-
 from fastapi import FastAPI, APIRouter, Query
+import requests
 
-# -----------------------------
-# Initialize FastAPI + Router
-# -----------------------------
-app = FastAPI(title="SKILLAB Skill Intelligence API")
-analysis_router = APIRouter(prefix="/api/analysis", tags=["SKILL Analysis"])
-# forecasting_router = APIRouter()
+router = APIRouter(prefix="/forecast", tags=["SKILL Forecast"])
 
 
-# ==========================================================
-#    JOB SKILL TIMELINE ENDPOINT (BASE FOR FORECASTING)
-# ==========================================================
-
-@analysis_router.get("/ku_forecast_arima")
+@router.get("/ku_forecast_arima")
 def ku_forecast(
     horizon: int = Query(6, description="Forecast horizon in months (3, 6, or 12)"),
     start_date: str = Query(None, description="Start date YYYY-MM"),
@@ -216,7 +201,7 @@ def ku_forecast(
     }
 
 
-@analysis_router.get("/policy_skill_forecast")
+@router.get("/policy_skill_forecast")
 def policy_skill_forecast(
     keywords: str = Query(..., description="Comma-separated keywords, e.g. ai,green,data"),
     horizon: int = Query(6, description="Forecast horizon in months (3, 6, 12)"),
@@ -434,7 +419,7 @@ def policy_skill_forecast(
         return {"error": str(e)}
 
 
-@analysis_router.get("/jobs_skill_forecast_NEWONE")
+@router.get("/jobs_skill_forecast_NEWONE")
 def jobs_skill_forecast(
     keywords: str = Query(..., description="Comma-separated keywords (e.g. AI, data, software)"),
     source: str = Query(None, description="Optional job source (e.g. linkedin, indeed)"),
@@ -673,12 +658,3 @@ def jobs_skill_forecast(
     }
 
 
-
-
-
-
-
-# -----------------------------
-# Register router into FastAPI
-# -----------------------------
-app.include_router(analysis_router)
