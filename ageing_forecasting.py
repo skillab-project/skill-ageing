@@ -247,8 +247,8 @@ def policy_skill_forecast(
         # === AUTH ===
         load_dotenv()
         API = os.getenv("TRACKER_API", "https://skillab-tracker.csd.auth.gr/api")
-        USER = os.getenv("TRACKER_USERNAME", "skillab_staff")
-        PASS = os.getenv("TRACKER_PASSWORD", "skillroadtrip00")
+        USER = os.getenv("TRACKER_USERNAME", "")
+        PASS = os.getenv("TRACKER_PASSWORD", "")
 
         res = requests.post(f"{API}/login",
                             json={"username": USER, "password": PASS},
@@ -461,8 +461,8 @@ def jobs_skill_forecast(
     # === 1️⃣ Authenticate ===
     load_dotenv()
     API = os.getenv("TRACKER_API", "https://skillab-tracker.csd.auth.gr/api")
-    USER = os.getenv("TRACKER_USERNAME", "skillab_staff")
-    PASS = os.getenv("TRACKER_PASSWORD", "skillroadtrip00")
+    USER = os.getenv("TRACKER_USERNAME", "")
+    PASS = os.getenv("TRACKER_PASSWORD", "")
 
     auth = requests.post(
         f"{API}/login",
