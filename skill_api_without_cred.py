@@ -721,12 +721,12 @@ def analyze_jobs_with_keywords(keywords: str = Query(..., description="Comma-sep
         fname = f"results/skill_analysis_{uuid.uuid4().hex[:6]}.json"
 
         output = {
-            "biology": biology_summary,
-            "competing": competing_results,
+            "skill_biology_summary": biology_summary,
+            "competing_skills": competing_results,
             "inverse_trends": inverse_results,
             "rapid_obsolescence": rapid_drops,
-            "external_shock": shock_results,
-            "epidemiology": epi_metrics,
+            "external_shock_skills": shock_results,
+            "epidemiological_metrics": epi_metrics,
             "total_jobs": total_jobs,
             "r0": r0_results,
             "herd_immunity_threshold": herd_immunity_results,
