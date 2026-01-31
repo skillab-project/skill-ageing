@@ -3,6 +3,7 @@ import os
 import glob
 from fastapi.testclient import TestClient
 from dotenv import load_dotenv
+import requests
 
 from skill_api_without_cred import app
 
@@ -10,7 +11,21 @@ load_dotenv()
 client = TestClient(app)
 
 TRACKER_CREDS = os.getenv("TRACKER_USERNAME") and os.getenv("TRACKER_PASSWORD")
+
+def is_ku_service_online(url):
+    """Checks if the KU service is reachable."""
+    if not url:
+        return False
+    try:
+        response = requests.get(url, timeout=3)
+        return response.status_code < 500
+    except requests.RequestException:
+        return False
+
 KU_API_URL = os.getenv("KU_API_URL")
+KU_ONLINE = is_ku_service_online(KU_API_URL)
+print(f"KU Service Online: {KU_ONLINE} at {KU_API_URL}")
+
 
 @pytest.fixture(scope="session", autouse=True)
 def cleanup_results():
@@ -81,7 +96,7 @@ class TestAgeingAnalysis:
         assert "summary" in response.json()
 
 
-@pytest.mark.skipif(not KU_API_URL, reason="KU_API_URL not configured")
+@pytest.mark.skipif(not KU_API_URL or not KU_ONLINE, reason=f"KU Service is offline or URL missing at {KU_API_URL}")
 class TestKUAgeingAnalysis:
 
     def test_ku_analysis(self):
