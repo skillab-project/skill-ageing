@@ -6,7 +6,7 @@ services:
     container_name: skill-ageing
     environment:
       - TRACKER_API=https://skillab-tracker.csd.auth.gr/api
-      - KU_API_URL=https://portal.skillab-project.eu/ku-detection
+      - KU_API_URL=https://se.uom.gr/skillab-public-ku-detection
     ports:
       - '8002:8000'
     labels:
