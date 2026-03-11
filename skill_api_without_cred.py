@@ -32,33 +32,31 @@ USERNAME = os.getenv("TRACKER_USERNAME")
 PASSWORD = os.getenv("TRACKER_PASSWORD")
 KU_API_URL = os.getenv("KU_API_URL")
 
+# ============================================================
+#  SHARED HELPERS
+# ============================================================
 
-
-# === API CALL TO SKILLAB ===
 def get_token():
-    """Authenticate and get API token"""
+    """Authenticate and return a fresh Bearer token."""
     res = requests.post(f"{API}/login", json={"username": USERNAME, "password": PASSWORD})
     res.raise_for_status()
     return res.text.replace('"', "")
 
-def api_extract(payload):
-    """Fetch job data from the SKILLAB Tracker API"""
-    token = get_token()
-    res = requests.post(f"{API}/jobs", headers={"Authorization": f"Bearer {token}"}, data=payload)
-    res.raise_for_status()
-    return res.json()
 
 def get_total_jobs_in_tracker():
-    """Get total job count from the Tracker"""
+    """Get total job count from the Tracker (no filters)."""
     token = get_token()
     res = requests.post(f"{API}/jobs", headers={"Authorization": f"Bearer {token}"}, data={})
     res.raise_for_status()
-    data = res.json()
-    return data.get("count", 0)
+    return res.json().get("count", 0)
 
-    # (rest of your analysis logic)
+
+# ============================================================
+#  SKILL ANALYSIS CORE
+# ============================================================
+
 def run_skill_analysis_from_list(job_list):
-
+    """Run the full Skill Ageing / Epidemiological analysis on a list of items."""
 
     skill_occurrences = defaultdict(list)
     for job in job_list:
@@ -76,7 +74,7 @@ def run_skill_analysis_from_list(job_list):
             continue
 
     biology_summary = []
-    combined_index = pd.date_range(start="2020-01-01", end="2025-12-31", freq="ME")
+    combined_index = pd.date_range(start="2020-01-01", end="2025-12-31", freq="M")
 
     def get_slope(ts):
         if len(ts) < 3:
@@ -95,9 +93,8 @@ def run_skill_analysis_from_list(job_list):
         recent_use = df["date"].max().year > 2022
         immunity = "High" if total_jobs > 20 and recent_use else "Low"
 
-        # === New: Compute slope (trend) ===
         s = pd.Series(1, index=pd.to_datetime(dates))
-        s = s.resample("ME").sum().reindex(combined_index, fill_value=0)
+        s = s.resample("M").sum().reindex(combined_index, fill_value=0)
         slope = get_slope(s)
 
         if slope < -0.01:
@@ -113,23 +110,21 @@ def run_skill_analysis_from_list(job_list):
             "Peak Activity Date": str(peak),
             "Total Jobs": total_jobs,
             "Immunity Score": immunity,
-            "Trend": trend,                 # 👈 NEW FIELD
-            "Slope": round(slope, 4)        # 👈 Optional numeric slope
+            "Trend": trend,
+            "Slope": round(slope, 4)
         })
-
 
     # === Time Series Construction ===
     tag_series = {}
-    combined_index = pd.date_range(start="2020-01-01", end="2025-12-31", freq="ME")
     for skill, dates in skill_occurrences.items():
         s = pd.Series(1, index=pd.to_datetime(dates))
-        s = s.resample("ME").sum().reindex(combined_index, fill_value=0)
+        s = s.resample("M").sum().reindex(combined_index, fill_value=0)
         tag_series[skill] = s
 
     all_tags_df = pd.DataFrame(tag_series).fillna(0)
     filtered_tags = [tag for tag in all_tags_df.columns if all_tags_df[tag].sum() >= 10]
 
-    # === Competing Skills (Negative Correlation) ===
+    # === Competing Skills ===
     competing_results = []
     for tag1, tag2 in combinations(filtered_tags, 2):
         s1, s2 = all_tags_df[tag1], all_tags_df[tag2]
@@ -138,18 +133,9 @@ def run_skill_analysis_from_list(job_list):
             continue
         corr = s1[overlap].corr(s2[overlap])
         if pd.notna(corr) and corr < -0.5:
-            competing_results.append({
-                "Skill A": tag1,
-                "Skill B": tag2,
-                "Correlation": round(corr, 3)
-            })
+            competing_results.append({"Skill A": tag1, "Skill B": tag2, "Correlation": round(corr, 3)})
 
     # === Inverse Trends ===
-    def get_slope(ts):
-        X = np.arange(len(ts)).reshape(-1, 1)
-        y = ts.values.reshape(-1, 1)
-        return LinearRegression().fit(X, y).coef_[0][0]
-
     inverse_results = []
     top_skills = sorted(filtered_tags, key=lambda x: all_tags_df[x].sum(), reverse=True)[:100]
     for tag1, tag2 in combinations(top_skills, 2):
@@ -160,14 +146,12 @@ def run_skill_analysis_from_list(job_list):
         slope1, slope2 = get_slope(s1[mask]), get_slope(s2[mask])
         if slope1 < -0.005 and slope2 > 0.005:
             inverse_results.append({
-                "Declining Skill": tag1,
-                "Competing Skill": tag2,
-                "Slope A": round(slope1, 4),
-                "Slope B": round(slope2, 4),
+                "Declining Skill": tag1, "Competing Skill": tag2,
+                "Slope A": round(slope1, 4), "Slope B": round(slope2, 4),
                 "Overlapping Months": int(mask.sum())
             })
 
-    # === Rapid Obsolescence Detection ===
+    # === Rapid Obsolescence ===
     rapid_drops = []
     for tag, series in tag_series.items():
         if (series > 0).sum() < 12:
@@ -198,16 +182,9 @@ def run_skill_analysis_from_list(job_list):
         total_jobs = series.sum()
         if total_jobs == 0:
             continue
-
         incidence = series.loc[shock_start:shock_end].sum()
         old_incidence = series.loc[old_start:old_end].sum()
-        if old_incidence > 0:
-            pct_change = 100 * (incidence - old_incidence) / old_incidence
-        elif incidence > 0:
-            pct_change = 999
-        else:
-            pct_change = 0
-
+        pct_change = 100 * (incidence - old_incidence) / old_incidence if old_incidence > 0 else (999 if incidence > 0 else 0)
         ip_ratio = incidence / total_jobs if total_jobs else 0
         recent_activity = series[series.index >= datetime(2023, 7, 1)].sum()
         is_dead = recent_activity == 0
@@ -231,7 +208,6 @@ def run_skill_analysis_from_list(job_list):
             "Attack Rate": round(attack_rate, 4)
         })
 
-    # === Save results ===
     output = {
         "skill_biology_summary": biology_summary,
         "competing_skills": competing_results,
@@ -242,12 +218,12 @@ def run_skill_analysis_from_list(job_list):
     }
 
     Path("results").mkdir(parents=True, exist_ok=True)
-    filename = f"results/ku_skill_analysis_{uuid.uuid4().hex[:6]}.json"
+    filename = f"results/skill_analysis_{uuid.uuid4().hex[:6]}.json"
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
 
     return {
-        "message": "✅ KU Skill analysis complete",
+        "message": "✅ Skill analysis complete",
         "file_saved": filename,
         "summary": {
             "Total Skills Found": len(biology_summary),
@@ -259,1024 +235,792 @@ def run_skill_analysis_from_list(job_list):
         "data": output
     }
 
-@app.get("/jobs-with-keywords")
-def analyze_jobs_with_keywords(keywords: str = Query(..., description="Comma-separated keywords (e.g. AI, data)"),
-                                source: str = Query(None, description="Optional job source"),
-                                min_upload_date: str = Query(None),
-                                max_upload_date: str = Query(None),
-                                max_pages: int = Query(10)):
-    try:
-        # ============================================
-        # 1. AUTHENTICATION
-        # ============================================
-        load_dotenv()
-        API = os.getenv("TRACKER_API", "https://skillab-tracker.csd.auth.gr/api")
-        USER = os.getenv("TRACKER_USERNAME", "")
-        PASS = os.getenv("TRACKER_PASSWORD", "")
 
-        auth = requests.post(
-            f"{API}/login",
-            json={"username": USER, "password": PASS},
-            timeout=20
+# ============================================================
+#  ✅ CORRECTED ENDPOINT: /skill-ageing
+#  Changes vs original:
+#    1. occupation_ids is Optional — user may pass one or many
+#    2. source is Optional
+#    3. Removed hardcoded limit=100000 — auto-paginates ALL pages
+#    4. Retry logic (3 attempts, 180s timeout, 10s backoff)
+#    5. Results cached in Completed_Analyses/<filename>.json
+#    6. Skill URI → label resolution preserved
+#    7. Full print monitoring throughout
+# ============================================================
+
+@app.get("/skill-ageing")
+def analyze_skills(
+    occupation_ids: Optional[str] = Query(
+        None, description="Comma-separated occupation IDs (e.g. http://data.europa.eu/esco/isco/C2153)"
+    ),
+    source: Optional[str] = Query(
+        None, description="Optional source filter (e.g. linkedin, indeed)"
+    ),
+    min_upload_date: Optional[str] = Query(None, description="Minimum upload date (YYYY-MM-DD)"),
+    max_upload_date: Optional[str] = Query(None, description="Maximum upload date (YYYY-MM-DD)"),
+):
+    """
+    Fetch ALL available job pages for given occupation IDs and source, resolve skill URIs to labels,
+    run the full Skill Ageing + Epidemiological analysis, and cache the result locally.
+    """
+    API_URL = os.getenv("TRACKER_API", "https://skillab-tracker.csd.auth.gr/api")
+    USERNAME_ENV = os.getenv("TRACKER_USERNAME", "skillab_staff")
+    PASSWORD_ENV = os.getenv("TRACKER_PASSWORD", "skillroadtrip00")
+
+    # === 📁 Setup local cache folder ===
+    folder = Path("Completed_Analyses")
+    if not folder.exists():
+        folder.mkdir(parents=True)
+        print(f"📁 Folder '{folder}' created.")
+    else:
+        print(f"📁 Folder '{folder}' already exists, moving on.")
+
+    # === 🏷️ Build deterministic cache filename ===
+    occ_ids_list = [o.strip() for o in occupation_ids.split(",") if o.strip()] if occupation_ids else []
+
+    filename = "completed_analysis_skill_ageing"
+    for occ in occ_ids_list:
+        match = re.search(r'C\d+$', occ)
+        filename += f"_{match.group(0)}" if match else f"_{occ.replace('/', '_').replace(':', '').replace('.', '')}"
+    if source:
+        filename += f"_{source}"
+    if min_upload_date:
+        filename += f"_from{min_upload_date}"
+    if max_upload_date:
+        filename += f"_to{max_upload_date}"
+    filename += ".json"
+
+    file_path = folder / filename
+    print(f"🗂️ Cache file path: {file_path}")
+
+    # === ✅ Return cached result if it already exists ===
+    if file_path.exists():
+        print(f"✅ Cache hit — loading results from '{file_path}' (skipping API call).")
+        with open(file_path, "r", encoding="utf-8") as f:
+            return json.loads(f.read())
+
+    print(f"🌐 No cache found — running full analysis from API...")
+
+    try:
+        # === 1️⃣ Authenticate ===
+        print("🔐 Authenticating with Tracker...")
+        res = requests.post(
+            f"{API_URL}/login",
+            json={"username": USERNAME_ENV, "password": PASSWORD_ENV},
+            timeout=15
         )
-        token = auth.text.replace('"', "")
-        headers = {"Authorization": f"Bearer {token}"}
+        res.raise_for_status()
+        token = res.text.replace('"', "")
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json"
+        }
+        print("✅ Authenticated successfully.")
 
-        # ============================================
-        # 2. FETCH JOBS
-        # ============================================
-        keywords_list = [k.strip() for k in keywords.split(",") if k.strip()]
-        all_items = []
+        # === 2️⃣ Log applied filters ===
+        print(f"🏢 Occupation IDs filter: {occ_ids_list if occ_ids_list else '(none)'}")
+        print(f"🗂️ Source filter: {source if source else '(none)'}")
+        if min_upload_date or max_upload_date:
+            print(f"📅 Date range: {min_upload_date or 'any'} → {max_upload_date or 'any'}")
 
-        for page in range(1, max_pages + 1):
-            form = [
-                ("keywords_logic", "or"),
-                ("skill_ids_logic", "or"),
-                ("occupation_ids_logic", "or"),
-            ]
-
-            for kw in keywords_list:
-                form.append(("keywords", kw))
-
+        # === 3️⃣ Helper: build form_data ===
+        def build_form_data():
+            fd = [("keywords_logic", "or"), ("skill_ids_logic", "or"), ("occupation_ids_logic", "or")]
+            for occ in occ_ids_list:
+                fd.append(("occupation_ids", occ))
             if source:
-                form.append(("sources", source))
+                fd.append(("sources", source))
             if min_upload_date:
-                form.append(("min_upload_date", min_upload_date))
+                fd.append(("min_upload_date", min_upload_date))
             if max_upload_date:
-                form.append(("max_upload_date", max_upload_date))
+                fd.append(("max_upload_date", max_upload_date))
+            return fd
 
-            r = requests.post(
-                f"{API}/jobs?page={page}&page_size=100",
-                headers=headers,
-                data=form,
-                timeout=40
-            )
+        # === 4️⃣ Constants ===
+        page_size = 100
+        REQUEST_TIMEOUT = 180
+        MAX_RETRIES = 3
+        RETRY_BACKOFF = 10
 
-            items = r.json().get("items", [])
+        def fetch_page_with_retry(page_num: int) -> dict:
+            url = f"{API_URL}/jobs?page={page_num}&page_size={page_size}"
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    print(f"   ↪ Attempt {attempt}/{MAX_RETRIES} for page {page_num} (timeout={REQUEST_TIMEOUT}s)...")
+                    r = requests.post(url, headers=headers, data=build_form_data(), timeout=REQUEST_TIMEOUT)
+                    if r.status_code != 200:
+                        print(f"   ⚠️ HTTP {r.status_code} on page {page_num}: {r.text[:300]}")
+                        return {}
+                    return r.json()
+                except requests.exceptions.ReadTimeout:
+                    print(f"   ⏱️ ReadTimeout on page {page_num}, attempt {attempt}/{MAX_RETRIES}.")
+                    if attempt < MAX_RETRIES:
+                        print(f"   🔄 Retrying in {RETRY_BACKOFF}s...")
+                        time.sleep(RETRY_BACKOFF)
+                    else:
+                        print(f"   ❌ All {MAX_RETRIES} attempts exhausted for page {page_num} — skipping.")
+                        return {}
+                except requests.exceptions.ConnectionError as conn_err:
+                    print(f"   ❌ ConnectionError on page {page_num}: {conn_err}")
+                    return {}
+                except Exception as ex:
+                    print(f"   ❌ Unexpected error on page {page_num}: {type(ex).__name__}: {ex}")
+                    return {}
+
+        # === 5️⃣ Probe page 1 to determine total count & pages ===
+        print("🔍 Probing API page 1 to determine total record count...")
+        probe_data = fetch_page_with_retry(1)
+
+        if not probe_data:
+            return {"error": "❌ Probe request (page 1) failed after all retries. Cannot determine total count."}
+
+        total_count = probe_data.get("count", 0)
+        total_pages = math.ceil(total_count / page_size) if total_count > 0 else 1
+        print(f"📊 Total records available: {total_count} → {total_pages} page(s) to fetch (page_size={page_size})")
+
+        if total_count == 0:
+            print("⚠️ No job postings found for the given filters.")
+            return {"message": "No job postings found for the given filters."}
+
+        # === 6️⃣ Paginate through ALL available pages ===
+        all_jobs = list(probe_data.get("items", []))
+        print(f"📦 Page 1/{total_pages}: {len(all_jobs)} jobs loaded from probe.")
+
+        for page in range(2, total_pages + 1):
+            print(f"📄 Fetching page {page}/{total_pages}...")
+            data = fetch_page_with_retry(page)
+
+            if not data:
+                print(f"⚠️ Page {page} returned no data after retries — stopping pagination early.")
+                break
+
+            items = data.get("items", [])
+            print(f"📦 Page {page}/{total_pages}: {len(items)} jobs (running total: {len(all_jobs) + len(items)})")
+
             if not items:
+                print("✅ No more results — stopping early.")
                 break
 
-            all_items.extend(items)
-            if len(items) < 100:
+            all_jobs.extend(items)
+
+            if len(items) < page_size:
+                print("✅ Last page reached (fewer results than page_size).")
                 break
 
-        total_jobs = len(all_items)
-        if total_jobs == 0:
-            return {"error": "No job postings found."}
+        print(f"🎯 Total jobs retrieved: {len(all_jobs)} / {total_count} available")
 
-        # ============================================
-        # 3. EXTRACT ONLY REAL ESCO URI SKILLS
-        # ============================================
-        raw_uri_occurrences = defaultdict(list)
+        if not all_jobs:
+            return {"message": "No job postings found for the given filters."}
 
-        for job in all_items:
-            try:
-                dt = job.get("upload_date")
-                if not dt:
-                    continue
-                date = datetime.strptime(dt, "%Y-%m-%d")
-
-                for skill in job.get("skills", []):
-
-                    # Convert dict skill → URI
-                    if isinstance(skill, dict) and "id" in skill:
-                        skill = skill["id"]
-
-                    # Keep ONLY ESCO skill URIs
-                    if isinstance(skill, str) and skill.startswith("http://data.europa.eu/esco/skill/"):
-                        raw_uri_occurrences[skill].append(date)
-
-            except:
-                continue
-
-        if not raw_uri_occurrences:
-            return {"error": "No ESCO URI skills found in jobs."}
-
-        # ============================================
-        # 4. LOAD ESCO SKILLS & MAP URI → label
-        # ============================================
-        esco_items = []
-        page = 1
-        while True:
-            rr = requests.post(
-                f"{API}/skills?page={page}&page_size=100",
-                headers=headers,
-                timeout=20
-            )
-            items = rr.json().get("items", [])
-            if not items:
-                break
-            esco_items.extend(items)
-            if len(items) < 100:
-                break
-            page += 1
-
-        id_to_label = {x["id"]: x["label"].lower() for x in esco_items}
-
-        # ===== Convert URI occurrences to DataFrame (like original working version)
-        records = []
-        for uri, dates in raw_uri_occurrences.items():
-            for d in dates:
-                records.append({"date": d.strftime("%Y-%m"), "skill_uri": uri})
-
-        df = pd.DataFrame(records)
-        df["date"] = pd.to_datetime(df["date"])
-        df = df.sort_values("date")
-
-        df["skill"] = df["skill_uri"].map(id_to_label)
-        df = df[df["skill"].notnull()]
-
-        if df.empty:
-            return {"error": "Could not map ESCO URIs to labels."}
-
-        # ===== Rebuild cleaned skill occurrences
-        skill_occurrences = defaultdict(list)
-        for _, row in df.iterrows():
-            skill_occurrences[row["skill"]].append(row["date"])
-
-        # ============================================
-        # 5. SKILL BIOLOGY
-        # ============================================
-        biology_summary = []
-        for skill, dates in skill_occurrences.items():
-            dd = pd.DataFrame(dates, columns=["date"])
-            dd["ym"] = dd["date"].dt.to_period("M")
-
-            birth = dd["date"].min()
-            peak = dd["ym"].value_counts().idxmax()
-            total_skill_jobs = len(dd)
-
-            recent_use = dd["date"].max().year >= 2023
-            immunity = "High" if total_skill_jobs > 20 and recent_use else "Low"
-
-            biology_summary.append({
-                "Skill": skill,
-                "Date of Birth": birth.strftime("%Y-%m-%d"),
-                "Peak Activity Date": str(peak),
-                "Total Jobs": total_skill_jobs,
-                "Immunity Score": immunity
-            })
-
-        # ============================================
-        # 6. MONTHLY TIME SERIES
-        # ============================================
-        combined_index = pd.date_range(start="2020-01-01", end="2025-12-31", freq="ME")
-        tag_series = {}
-
-        for skill, dates in skill_occurrences.items():
-            s = pd.Series(1, index=pd.to_datetime(dates))
-            s = s.resample("ME").sum().fillna(0)
-            tag_series[skill] = s.reindex(combined_index, fill_value=0)
-
-        df_ts = pd.DataFrame(tag_series).fillna(0)
-
-        # keep skills with minimum activity
-        filtered = [s for s in df_ts.columns if df_ts[s].sum() >= 10]
-
-        # ============================================
-        # 7. COMPETING SKILLS (negative correlation)
-        # ============================================
-        # === COMPETING SKILLS (lighter thresholds) ===
-        competing_results = []
-
-        min_overlap_months = 3  # was 5
-        negative_corr_threshold = -0.3  # was -0.5
-
-        for a, b in combinations(filtered, 2):
-            s1, s2 = df_ts[a], df_ts[b]
-
-            # overlap must still exist but loosen threshold
-            mask = (s1 > 0) & (s2 > 0)
-            if mask.sum() < min_overlap_months:
-                continue
-
-            corr = s1[mask].corr(s2[mask])
-
-            if pd.notna(corr) and corr < negative_corr_threshold:
-                competing_results.append({
-                    "Skill A": a,
-                    "Skill B": b,
-                    "Correlation": round(corr, 3)
-                })
-
-        # competing_results = []
-        # for a, b in combinations(filtered, 2):
-        #     s1, s2 = df_ts[a], df_ts[b]
-        #     mask = (s1 > 0) & (s2 > 0)
-        #     if mask.sum() < 5:
-        #         continue
-        #
-        #     corr = s1[mask].corr(s2[mask])
-        #     if pd.notna(corr) and corr < -0.5:
-        #         competing_results.append({
-        #             "Skill A": a,
-        #             "Skill B": b,
-        #             "Correlation": round(corr, 3)
-        #         })
-
-        # ============================================
-        # 8. INVERSE TRENDS
-        # ============================================
-        def slope(ts):
-            X = np.arange(len(ts)).reshape(-1, 1)
-            y = ts.values.reshape(-1, 1)
-            m = LinearRegression().fit(X, y)
-            return m.coef_[0][0]
-
-        inverse_results = []
-        top_skills = sorted(filtered, key=lambda x: df_ts[x].sum(), reverse=True)[:100]
-
-        for a, b in combinations(top_skills, 2):
-            s1, s2 = df_ts[a], df_ts[b]
-            mask = (s1 > 0) & (s2 > 0)
-            if mask.sum() < 6:
-                continue
-
-            s1_slope = slope(s1[mask])
-            s2_slope = slope(s2[mask])
-
-            if s1_slope < -0.005 and s2_slope > 0.005:
-                inverse_results.append({
-                    "Declining Skill": a,
-                    "Rising Skill": b,
-                    "Slope A": round(s1_slope, 4),
-                    "Slope B": round(s2_slope, 4),
-                    "Overlapping Months": int(mask.sum())
-                })
-
-        # ============================================
-        # 9. RAPID OBSOLESCENCE
-        # ============================================
-        rapid_drops = []
-        min_peak_value = 5
-        drop_window = 6
-        drop_threshold = 0.3
-
-        for skill, s in tag_series.items():
-            s = s.fillna(0)
-
-            if (s > 0).sum() < 12:
-                continue
-
-            peak = s.max()
-            if peak < min_peak_value:
-                continue
-
-            peak_idx = s.idxmax()
-            i = s.index.get_loc(peak_idx)
-            end_i = i + drop_window
-            if end_i >= len(s):
-                continue
-
-            after = s.iloc[i:end_i + 1]
-            min_val = after.min()
-
-            if (peak - min_val) / peak >= drop_threshold:
-                rapid_drops.append({
-                    "Skill": skill,
-                    "Peak Month": peak_idx.strftime("%Y-%m"),
-                    "Peak Value": int(peak),
-                    "Min After Peak": int(min_val),
-                    "Drop %": round((peak - min_val) * 100 / peak, 2)
-                })
-
-        # ============================================
-        # 10. EXTERNAL SHOCK (±6 months around cutoff)
-        # ============================================
-        cutoff = pd.Timestamp("2024-12-31")
-
-        pre_start = cutoff - pd.DateOffset(months=6) + pd.DateOffset(days=1)
-        pre_end = cutoff
-
-        post_start = cutoff + pd.DateOffset(days=1)
-        post_end = cutoff + pd.DateOffset(months=6)
-
-        shock_results = []
-
-        for skill, s in tag_series.items():
-            s = s.fillna(0)
-
-            pre = s.loc[pre_start:pre_end]
-            post = s.loc[post_start:post_end]
-
-            if len(pre) == 0 or len(post) == 0:
-                continue
-
-            pre_avg = pre.mean()
-            post_avg = post.mean()
-
-            if pre_avg == 0 and post_avg == 0:
-                continue
-
-            change = 999 if pre_avg == 0 else 100 * (post_avg - pre_avg) / pre_avg
-
-            if abs(change) >= 20:
-                shock_results.append({
-                    "Skill": skill,
-                    "Pre Avg": round(pre_avg, 2),
-                    "Post Avg": round(post_avg, 2),
-                    "Change %": round(change, 2)
-                })
-
-        # ============================================
-        # 11. EPIDEMIOLOGICAL METRICS
-        # ============================================
-        epi_metrics = []
-
-        for skill, s in tag_series.items():
-            s = s.fillna(0)
-            total = s.sum()
-            if total == 0:
-                continue
-
-            inc_1 = s.loc["2024-01-01":"2024-12-31"].sum()
-            inc_2 = s.loc["2023-01-01":"2023-12-31"].sum()
-
-            pct_change = (
-                999 if inc_2 == 0 and inc_1 > 0
-                else 0 if inc_2 == 0
-                else 100 * (inc_1 - inc_2) / inc_2
-            )
-
-            active_months = (s > 0).sum()
-            attack_rate = active_months / len(s)
-
-            epi_metrics.append({
-                "Skill": skill,
-                "Total Jobs": int(total),
-                "Incidence 2024": int(inc_1),
-                "Incidence 2023": int(inc_2),
-                "% Change": round(pct_change, 2),
-                "Attack Rate": round(attack_rate, 4),
-            })
-
-        # ============================================
-        # 12. SKILL R0 AND HERD IMMUNITY THRESHOLD
-        # ============================================
-
-        # ============================================
-        # 12. CORRECT R0 AND HIT CALCULATION
-        # ============================================
-
-        r0_results = []
-        herd_immunity_results = []
-
-        # Presence matrix: 1 if skill is visible in that month
-        presence_matrix = (df_ts > 0).astype(int)
-        skills_list = list(presence_matrix.columns)
-        n_months = len(presence_matrix)
-
-        for skill in skills_list:
-
-            # find all months where this skill is active
-            active_months = np.where(presence_matrix[skill] == 1)[0]
-            if len(active_months) == 0:
-                continue
-
-            total_new_after_skill = 0
-            total_following_windows = 0
-
-            for idx in active_months:
-
-                # skills present in the CURRENT month (co-skills)
-                baseline_set = set(presence_matrix.columns[presence_matrix.iloc[idx] == 1])
-
-                # look ahead 3 months AFTER the skill appears
-                for j in range(idx + 1, min(idx + 4, n_months)):
-                    following_set = set(presence_matrix.columns[presence_matrix.iloc[j] == 1])
-
-                    # NEW skills that appear AFTER this skill
-                    new_skills = following_set - baseline_set
-
-                    total_new_after_skill += len(new_skills)
-                    total_following_windows += 1
-
-            if total_following_windows == 0:
-                continue
-
-            r0 = total_new_after_skill / total_following_windows
-
-            # Herd Immunity Threshold
-            hit = 0 if r0 < 1 else (1 - (1 / r0))
-
-            r0_results.append({
-                "Skill": skill,
-                "R0": round(r0, 3)
-            })
-
-            herd_immunity_results.append({
-                "Skill": skill,
-                "R0": round(r0, 3),
-                "HIT": round(hit, 4)
-            })
-
-        # ============================================
-        # SKILL CONTACT RATE (Exposure Rate)
-        # ============================================
-
-        contact_rate_results = []
-
-        # We need job-level skill lists, not time series.
-        # So reconstruct: for each job, the set of skills (labels)
-        job_skill_sets = []
-
-        for job in all_items:
-            skills = []
-            for s in job.get("skills", []):
-
-                # Normalize skill format
-                if isinstance(s, dict) and "id" in s:
-                    s = s["id"]
-
-                # Keep only ESCO URIs
-                if isinstance(s, str) and s in id_to_label:
-                    skills.append(id_to_label[s].lower())
-
-            if skills:
-                job_skill_sets.append(set(skills))
-
-        # Contact Rate: How many other skills appear with each skill
-        skill_co_counts = defaultdict(int)
-        skill_occ_counts = defaultdict(int)
-
-        for skill_set in job_skill_sets:
-            for skill in skill_set:
-                skill_occ_counts[skill] += 1
-                skill_co_counts[skill] += (len(skill_set) - 1)  # co-skills = all others
-
-        contact_rate_results = []
-        for skill in skill_occ_counts:
-            rate = skill_co_counts[skill] / skill_occ_counts[skill]
-            contact_rate_results.append({
-                "Skill": skill,
-                "Contact Rate": round(rate, 3),
-                "Occurrences": skill_occ_counts[skill]
-            })
-
-        # ============================================
-        # 12. SAVE RESULTS
-        # ============================================
-        Path("results").mkdir(exist_ok=True)
-
-        fname = f"results/skill_analysis_{uuid.uuid4().hex[:6]}.json"
-
-        output = {
-            "skill_biology_summary": biology_summary,
-            "competing_skills": competing_results,
-            "inverse_trends": inverse_results,
-            "rapid_obsolescence": rapid_drops,
-            "external_shock_skills": shock_results,
-            "epidemiological_metrics": epi_metrics,
-            "total_jobs": total_jobs,
-            "r0": r0_results,
-            "herd_immunity_threshold": herd_immunity_results,
-            "contact_rate": contact_rate_results,
-
-        }
-
-        with open(fname, "w", encoding="utf-8") as f:
-            json.dump(output, f, ensure_ascii=False, indent=2)
-
-        return {
-            "message": "Skill analysis complete",
-            "file": fname,
-            "summary": {
-                "skills": len(skill_occurrences),
-                "competing": len(competing_results),
-                "inverse": len(inverse_results),
-                "obsolescence": len(rapid_drops),
-                "shock": len(shock_results),
-                "epidemiology": len(epi_metrics),
-                "jobs": total_jobs,
-                "HIT": len(herd_immunity_results),
-                "contact_rate_skills": len(contact_rate_results),
-            },
-            "data": output
-        }
-
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@app.get("/jobs")
-def analyze_skills(occupation: str = Query(...), source: str = Query(...)):
-    try:
-        # === Fetch data ===
-        source_data = api_extract({
-            "occupation_ids": [occupation],
-            "sources": source,
-            "limit": 100000
-        })
-
-        total_tracker_jobs = get_total_jobs_in_tracker()
-        print(f"📦 Total jobs in tracker (unfiltered): {total_tracker_jobs}")
-
-        all_items = source_data.get("items", [])
-        if not all_items:
-            return {"error": "No jobs found for given occupation and source."}
-
-        jobs_with_skills = [job for job in all_items if job.get("skills")]
-        jobs_without_skills = [job for job in all_items if not job.get("skills")]
-
-        print(f"✅ Jobs with skills: {len(jobs_with_skills)}")
-        print(f"❌ Jobs without skills: {len(jobs_without_skills)}")
-
-        # === Step 1: Collect unique skill IDs ===
+        # === 7️⃣ Collect unique skill URIs found in this job set ===
         unique_skill_ids = set()
-        for job in jobs_with_skills:
+        for job in all_jobs:
             for sid in job.get("skills", []):
                 if isinstance(sid, str) and sid.startswith("http"):
                     unique_skill_ids.add(sid)
 
+        print(f"📚 Found {len(unique_skill_ids)} unique skill URIs — resolving only these labels in batches...")
+
+        # === 8️⃣ Resolve ONLY the found URIs → labels, in batches of 50 ===
+        # We POST the specific IDs we need, not all skills in the tracker.
         id_to_label = {}
-
         if unique_skill_ids:
-            print(f"📚 Fetching {len(unique_skill_ids)} unique skill labels from /api/skills ...")
-
-            # === Authenticate with Tracker ===
-            API = os.getenv("TRACKER_API_URL", "https://skillab-tracker.csd.auth.gr/api")
-            USERNAME = os.getenv("TRACKER_USERNAME")
-            PASSWORD = os.getenv("TRACKER_PASSWORD")
-
-            res = requests.post(f"{API}/login", json={"username": USERNAME, "password": PASSWORD})
-            res.raise_for_status()
-            token = res.text.replace('"', "")
-
-            # === Bulk POST to /api/skills ===
-            skill_payload = {"ids": list(unique_skill_ids)}
             try:
-                skill_res = requests.post(
-                    f"{API}/skills",
-                    headers={"Authorization": f"Bearer {token}"},
-                    data=skill_payload,
-                    timeout=60
-                )
-                skill_res.raise_for_status()
-                skill_data = skill_res.json().get("items", [])
-                id_to_label = {s["id"]: s.get("label", s["id"]) for s in skill_data}
-                print(f"✅ Retrieved {len(id_to_label)} skill labels")
+                uri_list = list(unique_skill_ids)
+                batch_size = 50
+                total_batches = math.ceil(len(uri_list) / batch_size)
+                print(f"   Sending {total_batches} batch(es) of up to {batch_size} IDs each...")
+
+                for batch_num, start in enumerate(range(0, len(uri_list), batch_size), 1):
+                    batch = uri_list[start:start + batch_size]
+                    skill_payload = [("ids", sid) for sid in batch]
+                    print(f"   Batch {batch_num}/{total_batches}: resolving {len(batch)} URIs...")
+                    skill_res = requests.post(
+                        f"{API_URL}/skills",
+                        headers={"Authorization": f"Bearer {token}"},
+                        data=skill_payload,
+                        timeout=60
+                    )
+                    skill_res.raise_for_status()
+                    skill_items = skill_res.json().get("items", [])
+                    for s in skill_items:
+                        sid = s.get("id", "")
+                        if sid:
+                            id_to_label[sid] = s.get("label", sid)
+                    print(f"   Batch {batch_num}/{total_batches}: got {len(skill_items)} labels back (total so far: {len(id_to_label)})")
+
+                matched = sum(1 for sid in unique_skill_ids if sid in id_to_label)
+                unmatched = len(unique_skill_ids) - matched
+                print(f"URI matching done — matched: {matched}, unmatched (kept as-is): {unmatched}")
 
             except Exception as e:
-                print(f"⚠️ Skill label lookup failed: {e}")
+                print(f"Skill label lookup failed: {type(e).__name__}: {e} — using raw URIs as fallback.")
                 id_to_label = {sid: sid for sid in unique_skill_ids}
         else:
-            print("ℹ️ No ESCO skill IDs detected — skipping label mapping.")
+            print("No ESCO skill URIs detected — skipping label resolution.")
 
-        # === Step 2: Replace skill IDs with labels ===
-        for job in jobs_with_skills:
-            skills = job.get("skills", [])
-            job["skills"] = [id_to_label.get(s, s) for s in skills]
+        # === 9️⃣ Replace URIs with labels in jobs ===
+        for job in all_jobs:
+            job["skills"] = [id_to_label.get(s, s) for s in job.get("skills", [])]
 
-        # === Proceed with analysis ===
-        skill_occurrences = defaultdict(list)
-        for job in all_items:
-            try:
-                date_str = job.get("upload_date")
-                if not date_str:
-                    continue
-                date = datetime.strptime(date_str, "%Y-%m-%d")
-                skills = job.get("skills", [])
-                if not isinstance(skills, list):
-                    continue
-                for skill in skills:
-                    skill_occurrences[skill].append(date)
-            except:
-                continue
+        # === 🔟 Check total jobs in tracker (for context) ===
+        try:
+            total_tracker_jobs = get_total_jobs_in_tracker()
+            print(f"📦 Total jobs in tracker (unfiltered): {total_tracker_jobs}")
+        except Exception as e:
+            print(f"⚠️ Could not fetch total tracker job count: {e}")
+            total_tracker_jobs = None
 
+        # === 1️⃣1️⃣ Warn if low job count ===
         warning_message = None
-        total_jobs = len(all_items)
+        if len(all_jobs) < 50:
+            warning_message = f"⚠️ Low job count: only {len(all_jobs)} jobs found. Results may not be representative."
+            print(warning_message)
 
-        if total_jobs < 50:
-            warning_message = f"⚠️ Low job count: only {total_jobs} jobs found. Results may not be representative."
+        # === 1️⃣2️⃣ Run full Skill Ageing analysis ===
+        print("🚀 Running Skill Ageing analysis...")
+        analysis_result = run_skill_analysis_from_list(all_jobs)
 
-        # === Skill Biology ===
-        biology_summary = []
-        for skill, dates in skill_occurrences.items():
-            df = pd.DataFrame(dates, columns=["date"])
-            df["year_month"] = df["date"].dt.to_period("M")
-            birth = df["date"].min()
-            peak = df["year_month"].value_counts().idxmax()
-            total_jobs = len(df)
-            recent_use = df["date"].max().year > 2022
-            immunity = "High" if total_jobs > 20 and recent_use else "Low"
+        # === 1️⃣3️⃣ Enrich result with metadata ===
+        analysis_result["filters_used"] = {
+            "occupation_ids": occ_ids_list if occ_ids_list else None,
+            "source": source,
+            "min_upload_date": min_upload_date,
+            "max_upload_date": max_upload_date,
+        }
+        analysis_result["summary"]["Jobs Retrieved"] = len(all_jobs)
+        analysis_result["summary"]["Total Jobs Available"] = total_count
+        analysis_result["summary"]["Pages Fetched"] = total_pages
+        if total_tracker_jobs is not None:
+            analysis_result["summary"]["Total Jobs in Tracker"] = total_tracker_jobs
+        if warning_message:
+            analysis_result["warning"] = warning_message
 
-            biology_summary.append({
-                "Skill": skill,
-                "Date of Birth": birth.strftime("%Y-%m-%d"),
-                "Peak Activity Date": str(peak),
-                "Total Jobs": total_jobs,
-                "Immunity Score": immunity
-            })
+        # === 1️⃣4️⃣ Save result to cache ===
+        print(f"💾 Saving results to cache: '{file_path}'...")
+        with open(file_path, "w", encoding="utf-8") as json_file:
+            json.dump(analysis_result, json_file, indent=4, ensure_ascii=False)
+        print(f"✅ Results cached successfully to '{file_path}'.")
 
-        # === Time Series Setup ===
-        tag_series = {}
-        combined_index = pd.date_range(start="2020-01-01", end="2025-12-31", freq="ME")
-        for skill, dates in skill_occurrences.items():
-            s = pd.Series(1, index=pd.to_datetime(dates))
-            s = s.resample("ME").sum().fillna(0)
-            tag_series[skill] = s.reindex(combined_index, fill_value=0)
-
-        all_tags_df = pd.DataFrame(tag_series).fillna(0)
-        min_total_jobs = 10
-        filtered_tags = [tag for tag in all_tags_df.columns if all_tags_df[tag].sum() >= min_total_jobs]
-
-        # === Competing Skills ===
-        competing_results = []
-        min_overlap_months = 5
-        for tag1, tag2 in combinations(filtered_tags, 2):
-            s1 = all_tags_df[tag1]
-            s2 = all_tags_df[tag2]
-            overlap = (s1 > 0) & (s2 > 0)
-            if overlap.sum() < min_overlap_months:
-                continue
-            corr = s1[overlap].corr(s2[overlap])
-            if pd.notna(corr) and corr < -0.5:
-                competing_results.append({
-                    "Skill A": tag1,
-                    "Skill B": tag2,
-                    "Correlation": round(corr, 3)
-                })
-
-        # === Inverse Trends ===
-        def get_slope(ts):
-            X = np.arange(len(ts)).reshape(-1, 1)
-            y = ts.values.reshape(-1, 1)
-            model = LinearRegression().fit(X, y)
-            return model.coef_[0][0]
-
-        inverse_results = []
-        top_100_skills = sorted(filtered_tags, key=lambda x: all_tags_df[x].sum(), reverse=True)[:100]
-        for tag1, tag2 in combinations(top_100_skills, 2):
-            s1 = all_tags_df[tag1]
-            s2 = all_tags_df[tag2]
-            mask = (s1 > 0) & (s2 > 0)
-            if mask.sum() < 6:
-                continue
-            slope1 = get_slope(s1[mask])
-            slope2 = get_slope(s2[mask])
-            if slope1 < -0.005 and slope2 > 0.005:
-                inverse_results.append({
-                    "Declining Skill": tag1,
-                    "Competing Skill": tag2,
-                    "Slope A": round(slope1, 4),
-                    "Slope B": round(slope2, 4),
-                    "Overlapping Months": int(mask.sum())
-                })
-
-                # === Rapid Obsolescence Detection ===
-            drop_threshold = 0.3
-            drop_window = 6
-            min_peak_value = 5
-            min_total_months = 12
-
-            rapid_drops = []
-            for tag, series in tag_series.items():
-                series = series.fillna(0)
-                if (series > 0).sum() < min_total_months:
-                    continue
-                peak_value = series.max()
-                if peak_value < min_peak_value:
-                    continue
-                peak_idx = series.idxmax()
-                peak_loc = series.index.get_loc(peak_idx)
-                end_loc = peak_loc + drop_window
-                if end_loc >= len(series):
-                    continue
-                post_peak = series.iloc[peak_loc:end_loc + 1]
-                min_val = post_peak.min()
-                drop_ratio = (peak_value - min_val) / peak_value
-                if drop_ratio >= drop_threshold:
-                    rapid_drops.append({
-                        "Skill": tag,
-                        "Peak Month": peak_idx.strftime("%Y-%m"),
-                        "Peak Value": int(peak_value),
-                        "Min Value After Peak": int(min_val),
-                        "Drop Window (Months)": drop_window,
-                        "Drop %": round(drop_ratio * 100, 2)
-                    })
-
-            # === External Shock Detection ===
-            # === External Shock Detection ===
-            shock_start = pd.Timestamp("2023-01-01")
-            shock_end = pd.Timestamp("2023-12-31")
-            pre_start = pd.Timestamp("2022-01-01")
-            pre_end = pd.Timestamp("2022-12-31")
-
-            shock_results = []
-            for tag, series in tag_series.items():
-                series = series.fillna(0)
-
-                pre_period = series.loc[pre_start:pre_end]
-                post_period = series.loc[shock_start:shock_end]
-
-                if len(pre_period) == 0 or len(post_period) == 0:
-                    continue
-
-                pre_avg = pre_period.mean()
-                post_avg = post_period.mean()
-
-                if pre_avg == 0 and post_avg == 0:
-                    continue
-
-                change_pct = 0
-                if pre_avg == 0:
-                    change_pct = 999  # treat as infinite growth
-                else:
-                    change_pct = 100 * (post_avg - pre_avg) / pre_avg
-
-                if abs(change_pct) < 20:  # 🧪 new relaxed threshold
-                    continue
-
-                shock_results.append({
-                    "Skill": tag,
-                    "Pre-Shock Avg": round(pre_avg, 2),
-                    "Post-Shock Avg": round(post_avg, 2),
-                    "Change (%)": round(change_pct, 2)
-                })
-
-            # Optional print for debug (top 5 skills)
-            print("🔍 Checking pre vs post shock for top 5 skills:")
-            for tag in list(tag_series.keys())[:5]:
-                s = tag_series[tag].fillna(0)
-                pre_avg = s.loc[pre_start:pre_end].mean()
-                post_avg = s.loc[shock_start:shock_end].mean()
-                print(f"{tag}: pre={pre_avg:.2f}, post={post_avg:.2f}")
-
-            # === Epidemiological Metrics ===
-            # With this:
-            # Time windows
-            shock_start = pd.Timestamp("2023-01-01")
-            shock_end = pd.Timestamp("2023-12-31")  # full year
-            old_start = pd.Timestamp("2022-01-01")
-            old_end = pd.Timestamp("2022-12-31")
-
-            epi_metrics = []
-
-            for tag, series in tag_series.items():
-                series = series.fillna(0)
-                total_jobs = series.sum()
-                if total_jobs == 0:
-                    continue
-
-                # Use range-based slicing
-                incidence = series.loc[shock_start:shock_end].sum()
-                old_incidence = series.loc[old_start:old_end].sum()
-
-                if old_incidence > 0:
-                    pct_change = 100 * (incidence - old_incidence) / old_incidence
-                elif incidence > 0:
-                    pct_change = 999
-                else:
-                    pct_change = 0
-
-                incidence_prevalence_ratio = incidence / total_jobs if total_jobs > 0 else 0
-
-                recent_activity = series[series.index >= datetime(2023, 7, 1)].sum()
-                is_dead = recent_activity == 0
-
-                revival = "Yes" if old_incidence < incidence and old_incidence > 0 else "No"
-
-                mortality_ratio = incidence / (total_jobs - incidence) if (total_jobs - incidence) > 0 else 999
-
-                was_active = old_incidence > 0 or incidence > 0
-                cfr = 1.0 if (was_active and is_dead) else 0.0
-
-                active_months = (series > 0).sum()
-                total_months = len(series)
-                attack_rate = active_months / total_months if total_months > 0 else 0.0
-
-                epi_metrics.append({
-                    "Skill": tag,
-                    "Total Jobs": int(total_jobs),
-                    "Incidence (2023)": int(incidence),
-                    "Incidence (2022)": int(old_incidence),
-                    "% Change in Incidence": round(pct_change, 2),
-                    "Incidence : Prevalence": round(incidence_prevalence_ratio, 4),
-                    "Mortality Risk": "☠️" if is_dead else "🟢",
-                    "Revived?": revival,
-                    "Incidence : Mortality Ratio": round(mortality_ratio, 2),
-                    "CFR": round(cfr, 2),
-                    "Attack Rate": round(attack_rate, 4)
-                })
-
-            # === Save all results ===
-            output = {
-                "skill_biology_summary": biology_summary,
-                "competing_skills": competing_results,
-                "inverse_trends": inverse_results,
-                "rapid_obsolescence": rapid_drops,
-                "external_shock_skills": shock_results,
-                # ... inside final return dictionary
-                "total_jobs_in_tracker": total_tracker_jobs,
-                "epidemiological_metrics": epi_metrics,
-                "warning": warning_message,
-
-            }
-
-            Path("results").mkdir(parents=True, exist_ok=True)
-
-            def sanitize(s):
-                return s.replace("/", "_").replace(":", "_")
-
-            filename = f"results/skill_analysis_{sanitize(source)}_{sanitize(occupation)}_{uuid.uuid4().hex[:6]}.json"
-            with open(filename, "w", encoding="utf-8") as f:
-                json.dump(output, f, ensure_ascii=False, indent=2)
-
-            return {
-                "message": "✅ Skill analysis complete",
-                "file_saved": filename,
-                "summary": {
-                    "Total Skills Found": len(biology_summary),
-                    "Competing Skills Pairs": len(competing_results),
-                    "Inverse Trend Pairs": len(inverse_results),
-                    "Rapid Obsolescence Skills": len(rapid_drops),
-                    "External Shock Skills (2023)": len(shock_results),
-                    "total_epidemiological_skills": len(epi_metrics),
-                },
-                "data": output
-            }
+        return analysis_result
 
     except Exception as e:
+        print(f"❌ ERROR in skill-ageing: {type(e).__name__}: {e}")
         return {"error": str(e)}
 
-@app.get("/law-policy")
+
+# ============================================================
+#  All other endpoints below are unchanged from the original.
+#  Paste them here as-is.
+# ============================================================
+
+# ============================================================
+#  ✅ /skill-ageing-law-policy
+#  Changes vs original:
+#    1. Completed_Analyses caching (cache hit returns instantly)
+#    2. Batch skill URI resolution (only found URIs, not all tracker skills)
+#    3. Paginated law-policies fetch (auto all pages, retry logic)
+#    4. Removed duplicate get_token() local redefinition
+#    5. Consistent print monitoring
+# ============================================================
+
+@app.get("/skill-ageing-law-policy")
 def analyze_law_policy_skills(
-    keywords: str = Query(None, description="Comma-separated keywords to filter law/policies, e.g. AI,Data,Education"),
-    max_publication_date: str = Query(None, description="Max publication date in YYYY-MM-DD format")
+    keywords: Optional[str] = Query(None, description="Comma-separated keywords, e.g. AI,Data,Education"),
+    max_publication_date: Optional[str] = Query(None, description="Max publication date YYYY-MM-DD"),
 ):
-    """
-    Runs Skill Ageing analysis on law & policy documents from the Skillab Tracker.
-    Fetches data from /api/law-policies using optional keyword and publication date filters,
-    matches ESCO skill IDs with their labels via a single POST to /api/skills,
-    and performs the full Skill Ageing analysis.
-    """
+    API_URL = os.getenv("TRACKER_API", "https://skillab-tracker.csd.auth.gr/api")
+    USERNAME_ENV = os.getenv("TRACKER_USERNAME", "skillab_staff")
+    PASSWORD_ENV = os.getenv("TRACKER_PASSWORD", "skillroadtrip00")
+
+    # === 📁 Cache folder ===
+    folder = Path("Completed_Analyses")
+    if not folder.exists():
+        folder.mkdir(parents=True)
+        print(f"📁 Folder '{folder}' created.")
+    else:
+        print(f"📁 Folder '{folder}' already exists, moving on.")
+
+    # === 🏷️ Build cache filename ===
+    keywords_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords else []
+    filename = "completed_analysis_skill_ageing_law_policy"
+    for kw in keywords_list:
+        filename += f"_{kw}"
+    if max_publication_date:
+        filename += f"_until{max_publication_date}"
+    filename += ".json"
+
+    file_path = folder / filename
+    print(f"🗂️ Cache file path: {file_path}")
+
+    if file_path.exists():
+        print(f"✅ Cache hit — loading from '{file_path}'.")
+        with open(file_path, "r", encoding="utf-8") as f:
+            return json.loads(f.read())
+
+    print("🌐 No cache found — running full analysis from API...")
+
     try:
-        # === Step 1: Read environment variables ===
-        API = os.getenv("TRACKER_API_URL", "https://skillab-tracker.csd.auth.gr/api")
-        USERNAME = os.getenv("TRACKER_USERNAME")
-        PASSWORD = os.getenv("TRACKER_PASSWORD")
-
-        if not USERNAME or not PASSWORD:
-            raise ValueError("❌ Missing TRACKER_USERNAME or TRACKER_PASSWORD in .env")
-
-        print("🔧 Loaded from .env:")
-        print("TRACKER_API =", API)
-        print("TRACKER_USERNAME =", USERNAME)
-        print("TRACKER_PASSWORD =", "********")  # hidden for safety
-
-        # === Step 2: Authenticate ===
-        def get_token():
-            try:
-                res = requests.post(
-                    f"{API}/login",
-                    json={"username": USERNAME, "password": PASSWORD},
-                    timeout=10
-                )
-                res.raise_for_status()
-                return res.text.replace('"', "")
-            except Exception as e:
-                raise RuntimeError(f"Login failed: {e}")
-
-        token = get_token()
-
-        # === Step 3: Build payload for /api/law-policies ===
-        payload = {}
-        if keywords:
-            payload["keywords"] = [k.strip() for k in keywords.split(",") if k.strip()]
-        if max_publication_date:
-            payload["max_publication_date"] = max_publication_date
-
-        print(f"📡 Fetching law/policy data with payload: {payload}")
-
-        # === Step 4: Fetch law/policy data ===
-        res = requests.post(
-            f"{API}/law-policies",
-            headers={"Authorization": f"Bearer {token}"},
-            data=payload,
-            timeout=60
-        )
+        # === 1️⃣ Authenticate ===
+        print("🔐 Authenticating with Tracker...")
+        res = requests.post(f"{API_URL}/login", json={"username": USERNAME_ENV, "password": PASSWORD_ENV}, timeout=15)
         res.raise_for_status()
-        data = res.json()
+        token = res.text.replace('"', "")
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json"
+        }
+        print("✅ Authenticated successfully.")
+        print(f"📡 Keywords filter: {keywords_list if keywords_list else '(none)'}")
+        print(f"📅 Max publication date: {max_publication_date or '(none)'}")
 
-        items = data.get("items", data)
-        if not items:
-            return {"error": "No law or policy documents found for the given filters."}
+        # === 2️⃣ Retry helper ===
+        page_size = 100
+        REQUEST_TIMEOUT = 180
+        MAX_RETRIES = 3
+        RETRY_BACKOFF = 10
 
-        print(f"✅ Retrieved {len(items)} law/policy documents")
+        def fetch_page_with_retry(page_num: int) -> dict:
+            url = f"{API_URL}/law-policies?page={page_num}&page_size={page_size}"
+            form_data = [("keywords_logic", "or")]
+            for kw in keywords_list:
+                form_data.append(("keywords", kw))
+            if max_publication_date:
+                form_data.append(("max_publication_date", max_publication_date))
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    print(f"   ↪ Attempt {attempt}/{MAX_RETRIES} for page {page_num}...")
+                    r = requests.post(url, headers=headers, data=form_data, timeout=REQUEST_TIMEOUT)
+                    if r.status_code != 200:
+                        print(f"   ⚠️ HTTP {r.status_code}: {r.text[:300]}")
+                        return {}
+                    return r.json()
+                except requests.exceptions.ReadTimeout:
+                    print(f"   ⏱️ Timeout page {page_num}, attempt {attempt}/{MAX_RETRIES}.")
+                    if attempt < MAX_RETRIES:
+                        print(f"   🔄 Retrying in {RETRY_BACKOFF}s...")
+                        time.sleep(RETRY_BACKOFF)
+                    else:
+                        print(f"   ❌ All retries exhausted for page {page_num}.")
+                        return {}
+                except Exception as ex:
+                    print(f"   ❌ {type(ex).__name__}: {ex}")
+                    return {}
 
-        # === Step 5: Collect all skill IDs ===
+        # === 3️⃣ Probe page 1 ===
+        print("🔍 Probing page 1 to determine total count...")
+        probe_data = fetch_page_with_retry(1)
+        if not probe_data:
+            return {"error": "❌ Probe request failed after all retries."}
+
+        total_count = probe_data.get("count", 0)
+        total_pages = math.ceil(total_count / page_size) if total_count > 0 else 1
+        print(f"📊 Total records: {total_count} → {total_pages} page(s)")
+
+        if total_count == 0:
+            return {"message": "No law/policy documents found for the given filters."}
+
+        # === 4️⃣ Paginate all pages ===
+        all_docs = list(probe_data.get("items", []))
+        print(f"📦 Page 1/{total_pages}: {len(all_docs)} docs from probe.")
+
+        for page in range(2, total_pages + 1):
+            print(f"📄 Fetching page {page}/{total_pages}...")
+            data = fetch_page_with_retry(page)
+            if not data:
+                print(f"⚠️ Page {page} failed — stopping early.")
+                break
+            items = data.get("items", [])
+            print(f"📦 Page {page}/{total_pages}: {len(items)} docs (running total: {len(all_docs) + len(items)})")
+            if not items:
+                break
+            all_docs.extend(items)
+            if len(items) < page_size:
+                print("✅ Last page reached.")
+                break
+
+        print(f"🎯 Total docs retrieved: {len(all_docs)} / {total_count}")
+
+        # === 5️⃣ Collect unique skill URIs ===
         unique_skill_ids = set()
-        for p in items:
-            skill_list = p.get("skills") or p.get("skill_ids") or []
-            for sid in skill_list:
+        for doc in all_docs:
+            for sid in (doc.get("skills") or doc.get("skill_ids") or []):
                 if isinstance(sid, str) and sid.startswith("http"):
                     unique_skill_ids.add(sid)
 
-        # === Step 6: Fetch skill labels ===
+        print(f"📚 Found {len(unique_skill_ids)} unique skill URIs — resolving in batches...")
+
+        # === 6️⃣ Batch resolve only found URIs ===
+        id_to_label = {}
         if unique_skill_ids:
-            print(f"📚 Fetching {len(unique_skill_ids)} unique skill labels from /api/skills ...")
-            skill_payload = {"ids": list(unique_skill_ids)}
-
             try:
-                skill_res = requests.post(
-                    f"{API}/skills",
-                    headers={"Authorization": f"Bearer {token}"},
-                    data=skill_payload,
-                    timeout=60
-                )
-                skill_res.raise_for_status()
-                skill_data = skill_res.json().get("items", [])
-                id_to_label = {s["id"]: s.get("label", s["id"]) for s in skill_data}
-                print(f"✅ Retrieved {len(id_to_label)} skill labels")
+                uri_list = list(unique_skill_ids)
+                batch_size_skills = 50
+                total_batches = math.ceil(len(uri_list) / batch_size_skills)
+                for batch_num, start in enumerate(range(0, len(uri_list), batch_size_skills), 1):
+                    batch = uri_list[start:start + batch_size_skills]
+                    skill_payload = [("ids", sid) for sid in batch]
+                    print(f"   Batch {batch_num}/{total_batches}: resolving {len(batch)} URIs...")
+                    skill_res = requests.post(
+                        f"{API_URL}/skills",
+                        headers={"Authorization": f"Bearer {token}"},
+                        data=skill_payload,
+                        timeout=60
+                    )
+                    skill_res.raise_for_status()
+                    for s in skill_res.json().get("items", []):
+                        sid = s.get("id", "")
+                        if sid:
+                            id_to_label[sid] = s.get("label", sid)
+                    print(f"   Batch {batch_num}/{total_batches}: resolved so far: {len(id_to_label)}")
+                matched = sum(1 for sid in unique_skill_ids if sid in id_to_label)
+                print(f"🔗 Matched: {matched}/{len(unique_skill_ids)} URIs")
             except Exception as e:
-                print(f"⚠️ Skill label lookup failed: {e}")
+                print(f"⚠️ Skill label lookup failed: {type(e).__name__}: {e} — using raw URIs.")
                 id_to_label = {sid: sid for sid in unique_skill_ids}
-        else:
-            id_to_label = {}
 
-        # === Step 7: Transform to analysis-ready format ===
+        # === 7️⃣ Build analysis-ready items ===
         all_items = []
-        for p in items:
-            pub_date = p.get("publication_date") or p.get("date")
-            skills = p.get("skills") or p.get("skill_ids") or []
-            skills = [id_to_label.get(s, s) for s in skills]  # Convert IDs → labels
-            if pub_date and isinstance(skills, list) and len(skills) > 0:
-                all_items.append({
-                    "upload_date": pub_date,
-                    "skills": skills
-                })
+        for doc in all_docs:
+            pub_date = doc.get("publication_date") or doc.get("date")
+            skills = doc.get("skills") or doc.get("skill_ids") or []
+            skills = [id_to_label.get(s, s) for s in skills]
+            if pub_date and skills:
+                all_items.append({"upload_date": str(pub_date).split("T")[0], "skills": skills})
+
+        print(f"🧩 Valid docs with skills: {len(all_items)} / {len(all_docs)}")
 
         if not all_items:
             return {"warning": "No valid policy records with skills found."}
 
-        print(f"🧩 Total valid policies with skills: {len(all_items)}")
+        if len(all_items) < 50:
+            print(f"⚠️ Low doc count: {len(all_items)} — results may not be representative.")
+
+        # === 8️⃣ Run analysis ===
         print("🚀 Running Skill Ageing analysis...")
-
-        # === Step 8: Run analysis ===
         result = run_skill_analysis_from_list(all_items)
+        result["filters_used"] = {"keywords": keywords_list, "max_publication_date": max_publication_date}
+        result["summary"]["Docs Retrieved"] = len(all_docs)
+        result["summary"]["Total Docs Available"] = total_count
+        result["summary"]["Docs with Skills"] = len(all_items)
 
-        # === Step 9: Save output ===
-        Path("results").mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filter_tag = f"{(keywords or 'all').replace(',', '-')}_{(max_publication_date or 'latest')}"
-        filename = f"results/law_policy_skill_analysis_{filter_tag}_{uuid.uuid4().hex[:6]}.json"
-
-        with open(filename, "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
-
-        result["file_saved"] = filename
-        result["filters_used"] = {
-            "keywords": keywords,
-            "max_publication_date": max_publication_date
-        }
-
+        # === 9️⃣ Cache result ===
+        print(f"💾 Saving to cache: '{file_path}'...")
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=4, ensure_ascii=False)
+        print(f"✅ Cached successfully.")
         return result
 
     except Exception as e:
-        return {"error": f"Law/Policy skill ageing analysis failed: {str(e)}"}
+        print(f"❌ ERROR in skill-ageing-law-policy: {type(e).__name__}: {e}")
+        return {"error": str(e)}
 
 
-@app.get("/ku")
-def analyze_ku_skills(
-    start_date: str = Query(None, description="Start date in YYYY-MM format"),
-    end_date: str = Query(None, description="End date in YYYY-MM format"),
-    kus: str = Query(None, description="Comma-separated list of KU IDs to include, e.g., K1,K5,K10"),
-    organization: str = Query(None, description="Optional organization name to filter KU results by")
+# ============================================================
+#  ✅ /skill-ageing-courses
+#  Changes vs original:
+#    1. Completed_Analyses caching
+#    2. Batch skill URI resolution (only found URIs)
+#    3. Auto-paginate all course pages with retry
+#    4. Removed chunked_iterable helper (now uses simple batch loop)
+#    5. Consistent print monitoring
+# ============================================================
+
+@app.get("/skill-ageing-courses")
+def analyze_course_skills(
+    keywords: Optional[str] = Query(None, description="Keywords to filter courses"),
+    min_creation_date: Optional[str] = Query(None, description="Minimum creation date (YYYY-MM-DD)"),
+    max_creation_date: Optional[str] = Query(None, description="Maximum creation date (YYYY-MM-DD)"),
 ):
-    import requests, json
-    from datetime import datetime
+    API_URL = os.getenv("TRACKER_API", "https://skillab-tracker.csd.auth.gr/api")
+    USERNAME_ENV = os.getenv("TRACKER_USERNAME", "skillab_staff")
+    PASSWORD_ENV = os.getenv("TRACKER_PASSWORD", "skillroadtrip00")
+
+    # === 📁 Cache folder ===
+    folder = Path("Completed_Analyses")
+    if not folder.exists():
+        folder.mkdir(parents=True)
+        print(f"📁 Folder '{folder}' created.")
+    else:
+        print(f"📁 Folder '{folder}' already exists, moving on.")
+
+    # === 🏷️ Build cache filename ===
+    filename = "completed_analysis_skill_ageing_courses"
+    if keywords:
+        for kw in [k.strip() for k in keywords.split(",") if k.strip()]:
+            filename += f"_{kw}"
+    if min_creation_date:
+        filename += f"_from{min_creation_date}"
+    if max_creation_date:
+        filename += f"_to{max_creation_date}"
+    filename += ".json"
+
+    file_path = folder / filename
+    print(f"🗂️ Cache file path: {file_path}")
+
+    if file_path.exists():
+        print(f"✅ Cache hit — loading from '{file_path}'.")
+        with open(file_path, "r", encoding="utf-8") as f:
+            return json.loads(f.read())
+
+    print("🌐 No cache found — running full analysis from API...")
+
+    try:
+        # === 1️⃣ Authenticate ===
+        print("🔐 Authenticating with Tracker...")
+        res = requests.post(f"{API_URL}/login", json={"username": USERNAME_ENV, "password": PASSWORD_ENV}, timeout=15)
+        res.raise_for_status()
+        token = res.text.replace('"', "")
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json"
+        }
+        print("✅ Authenticated successfully.")
+        print(f"📡 Keywords filter: {keywords or '(none)'}")
+
+        # === 2️⃣ Retry helper ===
+        page_size = 100
+        REQUEST_TIMEOUT = 180
+        MAX_RETRIES = 3
+        RETRY_BACKOFF = 10
+
+        def fetch_page_with_retry(page_num: int) -> dict:
+            url = f"{API_URL}/courses?page={page_num}&page_size={page_size}"
+            form_data = [("keywords_logic", "or")]
+            if keywords:
+                for kw in [k.strip() for k in keywords.split(",") if k.strip()]:
+                    form_data.append(("keywords", kw))
+            if min_creation_date:
+                form_data.append(("min_creation_date", min_creation_date))
+            if max_creation_date:
+                form_data.append(("max_creation_date", max_creation_date))
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    print(f"   ↪ Attempt {attempt}/{MAX_RETRIES} for page {page_num}...")
+                    r = requests.post(url, headers=headers, data=form_data, timeout=REQUEST_TIMEOUT)
+                    if r.status_code != 200:
+                        print(f"   ⚠️ HTTP {r.status_code}: {r.text[:300]}")
+                        return {}
+                    return r.json()
+                except requests.exceptions.ReadTimeout:
+                    print(f"   ⏱️ Timeout page {page_num}, attempt {attempt}/{MAX_RETRIES}.")
+                    if attempt < MAX_RETRIES:
+                        print(f"   🔄 Retrying in {RETRY_BACKOFF}s...")
+                        time.sleep(RETRY_BACKOFF)
+                    else:
+                        print(f"   ❌ All retries exhausted for page {page_num}.")
+                        return {}
+                except Exception as ex:
+                    print(f"   ❌ {type(ex).__name__}: {ex}")
+                    return {}
+
+        # === 3️⃣ Probe page 1 ===
+        print("🔍 Probing page 1 to determine total count...")
+        probe_data = fetch_page_with_retry(1)
+        if not probe_data:
+            return {"error": "❌ Probe request failed after all retries."}
+
+        total_count = probe_data.get("count", 0)
+        total_pages = math.ceil(total_count / page_size) if total_count > 0 else 1
+        print(f"📊 Total records: {total_count} → {total_pages} page(s)")
+
+        if total_count == 0:
+            return {"message": "No courses found for the given filters."}
+
+        # === 4️⃣ Paginate all pages ===
+        all_courses = list(probe_data.get("items", []))
+        print(f"📦 Page 1/{total_pages}: {len(all_courses)} courses from probe.")
+
+        for page in range(2, total_pages + 1):
+            print(f"📄 Fetching page {page}/{total_pages}...")
+            data = fetch_page_with_retry(page)
+            if not data:
+                print(f"⚠️ Page {page} failed — stopping early.")
+                break
+            items = data.get("items", [])
+            print(f"📦 Page {page}/{total_pages}: {len(items)} courses (running total: {len(all_courses) + len(items)})")
+            if not items:
+                break
+            all_courses.extend(items)
+            if len(items) < page_size:
+                print("✅ Last page reached.")
+                break
+
+        print(f"🎯 Total courses retrieved: {len(all_courses)} / {total_count}")
+
+        # === 5️⃣ Collect unique skill URIs ===
+        unique_skill_ids = set()
+        for c in all_courses:
+            for sid in (c.get("skills") or c.get("skill_ids") or []):
+                if isinstance(sid, str) and sid.startswith("http"):
+                    unique_skill_ids.add(sid)
+
+        print(f"📚 Found {len(unique_skill_ids)} unique skill URIs — resolving in batches...")
+
+        # === 6️⃣ Batch resolve only found URIs ===
+        id_to_label = {}
+        if unique_skill_ids:
+            try:
+                uri_list = list(unique_skill_ids)
+                batch_size_skills = 50
+                total_batches = math.ceil(len(uri_list) / batch_size_skills)
+                for batch_num, start in enumerate(range(0, len(uri_list), batch_size_skills), 1):
+                    batch = uri_list[start:start + batch_size_skills]
+                    skill_payload = [("ids", sid) for sid in batch]
+                    print(f"   Batch {batch_num}/{total_batches}: resolving {len(batch)} URIs...")
+                    skill_res = requests.post(
+                        f"{API_URL}/skills",
+                        headers={"Authorization": f"Bearer {token}"},
+                        data=skill_payload,
+                        timeout=60
+                    )
+                    skill_res.raise_for_status()
+                    for s in skill_res.json().get("items", []):
+                        sid = s.get("id", "")
+                        if sid:
+                            id_to_label[sid] = s.get("label", sid)
+                    print(f"   Batch {batch_num}/{total_batches}: resolved so far: {len(id_to_label)}")
+                matched = sum(1 for sid in unique_skill_ids if sid in id_to_label)
+                print(f"🔗 Matched: {matched}/{len(unique_skill_ids)} URIs")
+            except Exception as e:
+                print(f"⚠️ Skill label lookup failed: {type(e).__name__}: {e} — using raw URIs.")
+                id_to_label = {sid: sid for sid in unique_skill_ids}
+
+        # === 7️⃣ Build analysis-ready items ===
+        all_items = []
+        for c in all_courses:
+            upload_date = (
+                c.get("last_updated") or c.get("creation_date")
+                or c.get("date") or c.get("created_at")
+            )
+            if upload_date:
+                upload_date = str(upload_date).split("T")[0]
+            skills = c.get("skills") or c.get("skill_ids") or []
+            skills = [id_to_label.get(s, s) for s in skills if s]
+            if upload_date and skills:
+                all_items.append({"upload_date": upload_date, "skills": skills})
+
+        print(f"🧩 Valid courses with skills: {len(all_items)} / {len(all_courses)}")
+
+        if not all_items:
+            return {"warning": "No valid courses with skills found."}
+
+        if len(all_items) < 50:
+            print(f"⚠️ Low course count: {len(all_items)} — results may not be representative.")
+
+        # === 8️⃣ Run analysis ===
+        print("🚀 Running Skill Ageing analysis...")
+        result = run_skill_analysis_from_list(all_items)
+        result["filters_used"] = {
+            "keywords": keywords,
+            "min_creation_date": min_creation_date,
+            "max_creation_date": max_creation_date
+        }
+        result["summary"]["Courses Retrieved"] = len(all_courses)
+        result["summary"]["Total Courses Available"] = total_count
+        result["summary"]["Courses with Skills"] = len(all_items)
+
+        # === 9️⃣ Cache result ===
+        print(f"💾 Saving to cache: '{file_path}'...")
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=4, ensure_ascii=False)
+        print(f"✅ Cached successfully.")
+        return result
+
+    except Exception as e:
+        print(f"❌ ERROR in skill-ageing-courses: {type(e).__name__}: {e}")
+        return {"error": str(e)}
+
+
+# ============================================================
+#  ✅ /ku-skill-ageing
+#  Changes vs original:
+#    1. Completed_Analyses caching
+#    2. Removed duplicate endpoint definition (original had two!)
+#    3. Kept the better debug version, removed the simpler one
+#    4. Consistent print monitoring
+#    5. KUs don't have ESCO URIs so no skill resolution needed
+# ============================================================
+
+@app.get("/ku-skill-ageing")
+def analyze_ku_skills(
+    start_date: Optional[str] = Query(None, description="Start date in YYYY-MM format"),
+    end_date: Optional[str] = Query(None, description="End date in YYYY-MM format"),
+    kus: Optional[str] = Query(None, description="Comma-separated KU IDs, e.g. K1,K5,K10"),
+    organization: Optional[str] = Query(None, description="Optional organization name to filter by"),
+):
     from collections import Counter
 
     BASE_URL = "https://portal.skillab-project.eu/ku-detection"
-    ENDPOINT = "/analysis_results"
-    api_url = f"{BASE_URL}{ENDPOINT}"
+    api_url = f"{BASE_URL}/analysis_results"
 
-    # === 1. Build query parameters ===
-    params = {}
-    if start_date:
-        params["start_date"] = start_date
-    if end_date:
-        params["end_date"] = end_date
+    # === 📁 Cache folder ===
+    folder = Path("Completed_Analyses")
+    if not folder.exists():
+        folder.mkdir(parents=True)
+        print(f"📁 Folder '{folder}' created.")
+    else:
+        print(f"📁 Folder '{folder}' already exists, moving on.")
+
+    # === 🏷️ Build cache filename ===
+    filename = "completed_analysis_ku_skill_ageing"
     if organization:
-        params["organization"] = organization
+        filename += f"_{organization.replace(' ', '_')}"
+    if kus:
+        for ku in [k.strip() for k in kus.split(",") if k.strip()]:
+            filename += f"_{ku}"
+    if start_date:
+        filename += f"_from{start_date}"
+    if end_date:
+        filename += f"_to{end_date}"
+    filename += ".json"
+
+    file_path = folder / filename
+    print(f"🗂️ Cache file path: {file_path}")
+
+    if file_path.exists():
+        print(f"✅ Cache hit — loading from '{file_path}'.")
+        with open(file_path, "r", encoding="utf-8") as f:
+            return json.loads(f.read())
+
+    print("🌐 No cache found — running full analysis from API...")
 
     try:
-        print(f"🔍 Fetching KU analysis data from: {api_url} with params {params}")
-        response = requests.get(api_url, params=params, timeout=60)
-        response.raise_for_status()
-        ku_data = response.json()
+        # === 1️⃣ Build query params and fetch ===
+        params = {}
+        if start_date:
+            params["start_date"] = start_date
+        if end_date:
+            params["end_date"] = end_date
+        if organization:
+            params["organization"] = organization
 
-        # === Debug: List unique organizations ===
-        orgs = sorted({r.get("organization", "Unknown") for r in ku_data})
-        print(f"🏢 Found {len(orgs)} unique organizations:")
-        print(orgs)
+        print(f"🔗 Fetching KU data from: {api_url}")
+        print(f"📦 Params: {params}")
 
-        if not ku_data:
-            return {"error": "No KU analysis data found for the given filters."}
+        response = requests.get(api_url, params=params, headers={"Accept": "application/json"}, timeout=60)
+        print(f"📥 HTTP Status: {response.status_code}")
+
+        try:
+            ku_data = response.json()
+        except Exception as je:
+            print(f"💥 JSON parse error: {je}")
+            return {"error": f"Invalid JSON from KU API: {str(je)}"}
+
+        # Handle wrapped response
+        if isinstance(ku_data, dict) and "items" in ku_data:
+            ku_data = ku_data["items"]
+
+        if not isinstance(ku_data, list) or not ku_data:
+            print("⚠️ Empty or invalid KU dataset returned.")
+            return {"warning": "No KU analysis data found for the given filters."}
 
         print(f"✅ Retrieved {len(ku_data)} KU records")
 
-        # === 2. Transform KU data ===
+        # === 2️⃣ Transform KU records ===
         selected_kus = set(kus.split(",")) if kus else None
         all_items = []
 
@@ -1285,14 +1029,10 @@ def analyze_ku_skills(
             detected_kus = record.get("detected_kus", {})
             record_org = record.get("organization", "Unknown")
 
-            # ✅ Apply organization filter (if provided)
             if organization and record_org.lower() != organization.lower():
                 continue
 
-            # ✅ Keep only active KUs (value == "1")
             active_kus = [ku for ku, val in detected_kus.items() if str(val) == "1"]
-
-            # ✅ Optional filter for specific KUs
             if selected_kus:
                 active_kus = [ku for ku in active_kus if ku in selected_kus]
 
@@ -1303,20 +1043,23 @@ def analyze_ku_skills(
                     "skills": active_kus
                 })
 
-        print(f"📊 Total valid items with skills: {len(all_items)}")
-
-        # === 3. Frequency check ===
-        ku_counter = Counter()
-        for job in all_items:
-            ku_counter.update(job["skills"])
-        print("📊 KU frequency counts (top 10):")
-        for ku, count in ku_counter.most_common(10):
-            print(f"{ku}: {count}")
+        print(f"📊 Valid KU records after filtering: {len(all_items)} / {len(ku_data)}")
 
         if not all_items:
             return {"warning": "No KU records matched the selected filters."}
 
-        # === 4. Run skill ageing analysis ===
+        # === 3️⃣ Frequency summary ===
+        ku_counter = Counter()
+        for item in all_items:
+            ku_counter.update(item["skills"])
+        print(f"📈 KU frequency (top 10): {ku_counter.most_common(10)}")
+
+        if len(all_items) < 50:
+            print(f"⚠️ Low record count: {len(all_items)} — results may not be representative.")
+
+        # === 4️⃣ Run analysis ===
+        # Note: KU labels are already human-readable (K1, K2 etc) — no URI resolution needed
+        print("🚀 Running Skill Ageing analysis on KU data...")
         result = run_skill_analysis_from_list(all_items)
         result["filters_used"] = {
             "start_date": start_date,
@@ -1324,164 +1067,169 @@ def analyze_ku_skills(
             "kus": kus,
             "organization": organization
         }
+        result["summary"]["KU Records Retrieved"] = len(all_items)
+        result["summary"]["Total KU Records from API"] = len(ku_data)
 
+        # === 5️⃣ Cache result ===
+        print(f"💾 Saving to cache: '{file_path}'...")
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=4, ensure_ascii=False)
+        print(f"✅ Cached successfully.")
         return result
 
+    except requests.exceptions.RequestException as re:
+        print(f"🌐 Network error: {re}")
+        return {"error": f"Network issue contacting KU API: {str(re)}"}
     except Exception as e:
+        print(f"❌ ERROR in ku-skill-ageing: {type(e).__name__}: {e}")
         return {"error": f"KU skill analysis failed: {str(e)}"}
 
 
-@app.get("/courses")
-def analyze_course_skills(
-    keywords: str = Query(None, description="Keywords to filter courses"),
-    min_creation_date: str = Query(None, description="Minimum creation date (YYYY-MM-DD)"),
-    max_creation_date: str = Query(None, description="Maximum creation date (YYYY-MM-DD)")
+@app.get("/ku-debug")
+def ku_debug(
+    start_date: Optional[str] = Query(None, description="Start date YYYY-MM"),
+    end_date: Optional[str] = Query(None, description="End date YYYY-MM"),
+    organization: Optional[str] = Query(None, description="Filter results by organization name"),
+    x_organization: str = Query(..., description="Required: your organization name for the API header (X-User-Organization)"),
 ):
+    from collections import Counter
+
+    BASE_URL = "https://portal.skillab-project.eu/ku-detection"
+    api_url = f"{BASE_URL}/analysis_results"
+
+    params = {}
+    if start_date:
+        params["start_date"] = start_date
+    if end_date:
+        params["end_date"] = end_date
+    if organization:
+        params["organization"] = organization
+
+    print(f"🔍 [ku-debug] Fetching from {api_url} with params {params}")
+    print(f"🔑 X-User-Organization header: {x_organization}")
+
     try:
-        # === Step 1: Read environment variables ===
-        API = os.getenv("TRACKER_API")
-        USERNAME = os.getenv("TRACKER_USERNAME")
-        PASSWORD = os.getenv("TRACKER_PASSWORD")
+        response = requests.get(api_url, params=params, headers={"Accept": "application/json", "X-User-Organization": x_organization}, timeout=60)
+        print(f"📥 HTTP Status: {response.status_code}")
+        print(f"📥 Response size: {len(response.text)} chars")
+        print(f"📥 Raw response: {response.text[:300]}")
 
-        print("🔧 Loaded from .env:")
-        print("TRACKER_API =", API)
-        print("TRACKER_USERNAME =", USERNAME)
-        print("TRACKER_PASSWORD =", "********")  # hidden
+        # Return full error detail if not 2xx
+        if response.status_code >= 400:
+            return {
+                "error": f"API returned HTTP {response.status_code}",
+                "url_called": str(response.url),
+                "params_sent": params,
+                "response_body": response.text,
+                "hint": "The KU API may require specific params, auth, or a different method (GET vs POST)."
+            }
 
-        # === Step 2: Authenticate ===
-        def get_token():
-            try:
-                res = requests.post(
-                    f"{API}/login",
-                    json={"username": USERNAME, "password": PASSWORD},
-                    timeout=10
-                )
-                res.raise_for_status()
-                return res.text.replace('"', "")
-            except Exception as e:
-                raise RuntimeError(f"Login failed: {e}")
+        try:
+            raw = response.json()
+        except Exception as je:
+            return {
+                "error": f"JSON parse failed: {je}",
+                "raw_text_snippet": response.text[:500]
+            }
 
-        token = get_token()
+        # Unwrap if needed
+        if isinstance(raw, dict) and "items" in raw:
+            records = raw["items"]
+            top_level_keys = list(raw.keys())
+            top_level_count = raw.get("count", None)
+        elif isinstance(raw, list):
+            records = raw
+            top_level_keys = ["(root is a list)"]
+            top_level_count = None
+        else:
+            return {
+                "error": "Unexpected response structure",
+                "type": str(type(raw)),
+                "snippet": str(raw)[:500]
+            }
 
-        # === Step 3: Prepare payload for /api/courses ===
-        payload = {}
-        if keywords:
-            payload["keywords"] = [keywords]
-        if min_creation_date:
-            payload["min_creation_date"] = min_creation_date
-        if max_creation_date:
-            payload["max_creation_date"] = max_creation_date
+        total_records = len(records)
+        print(f"📊 Total records in response: {total_records}")
 
-        print(f"📡 Fetching course data with payload: {payload}")
+        if total_records == 0:
+            return {
+                "status": "⚠️ API returned 0 records for these filters",
+                "params_used": params,
+                "top_level_keys": top_level_keys,
+                "top_level_count_field": top_level_count,
+            }
 
-        # === Step 4: Fetch courses ===
-        res = requests.post(
-            f"{API}/courses",
-            headers={"Authorization": f"Bearer {token}"},
-            data=payload,
-            timeout=60
-        )
-        res.raise_for_status()
-        course_data = res.json()
-        items = course_data.get("items", [])
-        if not items:
-            return {"warning": "No valid courses found in tracker response."}
+        # === Inspect first record structure ===
+        first_record = records[0]
+        first_record_keys = list(first_record.keys())
 
-        print(f"✅ Retrieved {len(items)} courses")
+        # === Organizations ===
+        org_counter = Counter(r.get("organization", "Unknown") for r in records)
 
-        # === Step 5: Extract unique skill IDs ===
-        unique_skill_ids = set()
-        for c in items:
-            skills = c.get("skills") or c.get("skill_ids") or []
-            unique_skill_ids.update(skills)
+        # === Timestamps ===
+        timestamps = [r.get("timestamp", "") for r in records if r.get("timestamp")]
+        timestamps_sorted = sorted(timestamps)
+        earliest = timestamps_sorted[0] if timestamps_sorted else "N/A"
+        latest = timestamps_sorted[-1] if timestamps_sorted else "N/A"
 
-        print(f"📚 Fetching {len(unique_skill_ids)} unique skill labels from /api/skills ...")
+        # === KU activity ===
+        ku_counter = Counter()
+        records_with_active_kus = 0
+        records_with_no_active_kus = 0
 
-        # === Step 6: Fetch skills in batches ===
-        def chunked_iterable(iterable, size):
-            it = iter(iterable)
-            while True:
-                chunk = list(islice(it, size))
-                if not chunk:
-                    break
-                yield chunk
+        for r in records:
+            detected = r.get("detected_kus", {})
+            active = [ku for ku, val in detected.items() if str(val) == "1"]
+            if active:
+                records_with_active_kus += 1
+                ku_counter.update(active)
+            else:
+                records_with_no_active_kus += 1
 
-        all_skill_data = []
-        batch_size = 100
-        for batch in chunked_iterable(list(unique_skill_ids), batch_size):
-            skill_payload = [("ids", sid) for sid in batch]
-            print(f"🧾 Sending batch of {len(batch)} skill IDs to /api/skills ...")
-            skill_res = requests.post(
-                f"{API}/skills",
-                headers={"Authorization": f"Bearer {token}"},
-                data=skill_payload,
-                timeout=60
-            )
-            skill_res.raise_for_status()
-            skill_batch = skill_res.json().get("items", [])
-            all_skill_data.extend(skill_batch)
+        # === Sample records (first 3, trimmed) ===
+        sample_records = []
+        for r in records[:3]:
+            detected = r.get("detected_kus", {})
+            active_kus = [ku for ku, val in detected.items() if str(val) == "1"]
+            sample_records.append({
+                "organization": r.get("organization", "Unknown"),
+                "timestamp": r.get("timestamp", "N/A"),
+                "total_ku_fields": len(detected),
+                "active_kus": active_kus,
+                "active_ku_count": len(active_kus),
+            })
 
-        print(f"✅ Retrieved {len(all_skill_data)} total skill labels across batches")
-
-        # === Step 7: Map skill IDs to labels ===
-        id_to_label = {}
-        for s in all_skill_data:
-            skill_id = s["id"].strip().rstrip("/")
-            label = s.get("label", s["id"])
-            id_to_label[skill_id] = label
-            id_to_label[skill_id.split("/")[-1]] = label  # UUID version
-
-        print("🧠 Example skill mappings:")
-        for k, v in list(id_to_label.items())[:5]:
-            print(f"  {k} → {v}")
-
-        # === Step 8: Convert to analysis-ready format ===
-        all_items = []
-        for c in items:
-            upload_date = (
-                c.get("last_updated")
-                or c.get("creation_date")
-                or c.get("date")
-                or c.get("created_at")
-            )
-            if upload_date:
-                upload_date = str(upload_date).split("T")[0]
-
-            skills = c.get("skills") or c.get("skill_ids") or []
-            skills = [id_to_label.get(s.strip().rstrip("/"), s) for s in skills if s]
-
-            if upload_date and skills:
-                all_items.append({
-                    "upload_date": upload_date,
-                    "skills": skills
-                })
-
-        print("🧩 Preview of first course with skills:")
-        print(json.dumps(all_items[:2], indent=2, ensure_ascii=False))
-
-        if not all_items:
-            return {"warning": "No valid courses with skills found."}
-
-        # === Step 9: Run analysis ===
-        result = run_skill_analysis_from_list(all_items)
-
-        # === Step 10: Save output ===
-        Path("results").mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filter_tag = f"{(keywords or 'all').replace(',', '-')}"
-        filename = f"results/course_skill_analysis_{filter_tag}_{timestamp}_{uuid.uuid4().hex[:6]}.json"
-
-        with open(filename, "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
-
-        result["file_saved"] = filename
-        result["filters_used"] = {
-            "keywords": keywords,
-            "min_creation_date": min_creation_date,
-            "max_creation_date": max_creation_date
+        result = {
+            "status": "✅ KU API reachable and returning data",
+            "params_used": params,
+            "response_structure": {
+                "top_level_keys": top_level_keys,
+                "top_level_count_field": top_level_count,
+                "first_record_keys": first_record_keys,
+            },
+            "counts": {
+                "total_records": total_records,
+                "records_with_active_kus": records_with_active_kus,
+                "records_with_no_active_kus": records_with_no_active_kus,
+                "unique_organizations": len(org_counter),
+                "unique_active_kus": len(ku_counter),
+            },
+            "date_range": {
+                "earliest_timestamp": earliest,
+                "latest_timestamp": latest,
+            },
+            "organizations": dict(org_counter.most_common()),
+            "ku_frequency_top20": dict(ku_counter.most_common(20)),
+            "sample_records": sample_records,
         }
 
+        print(f"✅ [ku-debug] Done — {total_records} records, {len(org_counter)} orgs, {len(ku_counter)} unique KUs")
         return result
 
+    except requests.exceptions.RequestException as e:
+        print(f"🌐 Network error: {e}")
+        return {"error": f"Network error: {str(e)}"}
     except Exception as e:
-        return {"error": f"Course skill ageing analysis failed: {str(e)}"}
+        print(f"❌ ERROR in ku-debug: {type(e).__name__}: {e}")
+        return {"error": str(e)}
+
