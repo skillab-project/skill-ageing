@@ -76,7 +76,7 @@ def run_skill_analysis_from_list(job_list):
             continue
 
     biology_summary = []
-    combined_index = pd.date_range(start="2020-01-01", end="2025-12-31", freq="M")
+    combined_index = pd.date_range(start="2020-01-01", end="2025-12-31", freq="ME")
 
     def get_slope(ts):
         if len(ts) < 3:
@@ -88,7 +88,7 @@ def run_skill_analysis_from_list(job_list):
 
     for skill, dates in skill_occurrences.items():
         df = pd.DataFrame(dates, columns=["date"])
-        df["year_month"] = df["date"].dt.to_period("M")
+        df["year_month"] = df["date"].dt.to_period("ME")
         birth = df["date"].min()
         peak = df["year_month"].value_counts().idxmax()
         total_jobs = len(df)
@@ -97,7 +97,7 @@ def run_skill_analysis_from_list(job_list):
 
         # === New: Compute slope (trend) ===
         s = pd.Series(1, index=pd.to_datetime(dates))
-        s = s.resample("M").sum().reindex(combined_index, fill_value=0)
+        s = s.resample("ME").sum().reindex(combined_index, fill_value=0)
         slope = get_slope(s)
 
         if slope < -0.01:
@@ -120,10 +120,10 @@ def run_skill_analysis_from_list(job_list):
 
     # === Time Series Construction ===
     tag_series = {}
-    combined_index = pd.date_range(start="2020-01-01", end="2025-12-31", freq="M")
+    combined_index = pd.date_range(start="2020-01-01", end="2025-12-31", freq="ME")
     for skill, dates in skill_occurrences.items():
         s = pd.Series(1, index=pd.to_datetime(dates))
-        s = s.resample("M").sum().reindex(combined_index, fill_value=0)
+        s = s.resample("ME").sum().reindex(combined_index, fill_value=0)
         tag_series[skill] = s
 
     all_tags_df = pd.DataFrame(tag_series).fillna(0)
@@ -400,7 +400,7 @@ def analyze_jobs_with_keywords(keywords: str = Query(..., description="Comma-sep
         biology_summary = []
         for skill, dates in skill_occurrences.items():
             dd = pd.DataFrame(dates, columns=["date"])
-            dd["ym"] = dd["date"].dt.to_period("M")
+            dd["ym"] = dd["date"].dt.to_period("ME")
 
             birth = dd["date"].min()
             peak = dd["ym"].value_counts().idxmax()
@@ -853,7 +853,7 @@ def analyze_skills(occupation: str = Query(...), source: str = Query(...)):
         biology_summary = []
         for skill, dates in skill_occurrences.items():
             df = pd.DataFrame(dates, columns=["date"])
-            df["year_month"] = df["date"].dt.to_period("M")
+            df["year_month"] = df["date"].dt.to_period("ME")
             birth = df["date"].min()
             peak = df["year_month"].value_counts().idxmax()
             total_jobs = len(df)
@@ -870,10 +870,10 @@ def analyze_skills(occupation: str = Query(...), source: str = Query(...)):
 
         # === Time Series Setup ===
         tag_series = {}
-        combined_index = pd.date_range(start="2020-01-01", end="2025-12-31", freq="M")
+        combined_index = pd.date_range(start="2020-01-01", end="2025-12-31", freq="ME")
         for skill, dates in skill_occurrences.items():
             s = pd.Series(1, index=pd.to_datetime(dates))
-            s = s.resample("M").sum().fillna(0)
+            s = s.resample("ME").sum().fillna(0)
             tag_series[skill] = s.reindex(combined_index, fill_value=0)
 
         all_tags_df = pd.DataFrame(tag_series).fillna(0)
