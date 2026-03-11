@@ -1,5 +1,6 @@
 from fastapi import FastAPI, APIRouter, Query
 import requests
+import os
 
 router = APIRouter(prefix="/forecast", tags=["SKILL Forecast"])
 
