@@ -27,7 +27,7 @@ def ku_forecast(
     warnings.filterwarnings("ignore")
 
     # === 1️⃣ Fetch KU detection data from SKILLAB ===
-    BASE_URL = "https://portal.skillab-project.eu/ku-detection/analysis_results"
+    BASE_URL = os.getenv("KU_API_URL") + "/analysis_results"
 
     params = {}
     if start_date:
