@@ -88,7 +88,7 @@ def run_skill_analysis_from_list(job_list):
 
     for skill, dates in skill_occurrences.items():
         df = pd.DataFrame(dates, columns=["date"])
-        df["year_month"] = df["date"].dt.to_period("ME")
+        df["year_month"] = df["date"].dt.to_period("M")
         birth = df["date"].min()
         peak = df["year_month"].value_counts().idxmax()
         total_jobs = len(df)
@@ -400,7 +400,7 @@ def analyze_jobs_with_keywords(keywords: str = Query(..., description="Comma-sep
         biology_summary = []
         for skill, dates in skill_occurrences.items():
             dd = pd.DataFrame(dates, columns=["date"])
-            dd["ym"] = dd["date"].dt.to_period("ME")
+            dd["ym"] = dd["date"].dt.to_period("M")
 
             birth = dd["date"].min()
             peak = dd["ym"].value_counts().idxmax()
@@ -853,7 +853,7 @@ def analyze_skills(occupation: str = Query(...), source: str = Query(...)):
         biology_summary = []
         for skill, dates in skill_occurrences.items():
             df = pd.DataFrame(dates, columns=["date"])
-            df["year_month"] = df["date"].dt.to_period("ME")
+            df["year_month"] = df["date"].dt.to_period("M")
             birth = df["date"].min()
             peak = df["year_month"].value_counts().idxmax()
             total_jobs = len(df)
