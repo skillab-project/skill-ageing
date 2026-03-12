@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, APIRouter, Query
 from typing import Optional
 from pathlib import Path
 from dotenv import load_dotenv
@@ -19,7 +19,7 @@ USERNAME = os.getenv("TRACKER_USERNAME")
 PASSWORD = os.getenv("TRACKER_PASSWORD")
 KU_API   = os.getenv("KU_API_URL", "").rstrip("/")
 
-app = FastAPI(title="SKILLAB Ageing & Forecast API")
+router = APIRouter(prefix="/forecast", tags=["SKILL Forecast"])
 
 
 # ============================================================
@@ -165,7 +165,7 @@ def _normalize_shares(results: dict):
 #  ENDPOINT 1: /forecast/ku_forecast_arima
 # ============================================================
 
-@app.get("/ku_forecast_arima")
+@router.get("/ku_forecast_arima")
 def ku_forecast(
     horizon:      int = Query(6,    description="Forecast horizon in months (3, 6, or 12)"),
     start_date:   str = Query(None, description="Start date YYYY-MM"),
@@ -291,7 +291,7 @@ def ku_forecast(
 #  ENDPOINT 2: /forecast/policy_skill_forecast
 # ============================================================
 
-@app.get("/policy_skill_forecast")
+@router.get("/policy_skill_forecast")
 def policy_skill_forecast(
     keywords: str = Query(..., description="Comma-separated keywords, e.g. ai,green,data"),
     horizon:  int = Query(6,   description="Forecast horizon in months (3, 6, 12)")
@@ -455,7 +455,7 @@ def policy_skill_forecast(
 #  ENDPOINT 3: /forecast/jobs_skill_forecast_NEWONE
 # ============================================================
 
-@app.get("/jobs_skill_forecast_NEWONE")
+@router.get("/jobs_skill_forecast_NEWONE")
 def jobs_skill_forecast(
     keywords:        Optional[str] = Query(None, description="Comma-separated keywords (e.g. AI, data, software)"),
     occupation_ids:  Optional[str] = Query(None, description="Comma-separated occupation IDs (e.g. http://data.europa.eu/esco/isco/C2153)"),

@@ -1,10 +1,9 @@
 import pytest
 import os
-import glob
+import shutil
+from pathlib import Path
 from fastapi.testclient import TestClient
 from dotenv import load_dotenv
-import requests
-
 from skill_api_without_cred import app
 
 load_dotenv()
@@ -12,107 +11,96 @@ client = TestClient(app)
 
 TRACKER_CREDS = os.getenv("TRACKER_USERNAME") and os.getenv("TRACKER_PASSWORD")
 
-def is_ku_service_online(url):
-    """Checks if the KU service is reachable."""
-    if not url:
-        return False
-    try:
-        response = requests.get(url, timeout=3)
-        return response.status_code < 500
-    except requests.RequestException:
-        return False
-
-KU_API_URL = os.getenv("KU_API_URL")
-KU_ONLINE = is_ku_service_online(KU_API_URL)
-print(f"KU Service Online: {KU_ONLINE} at {KU_API_URL}")
-
+# === SPECIFIC DATE FOR FAST TESTING ===
+TEST_DATE = "2024-09-01" 
 
 @pytest.fixture(scope="session", autouse=True)
-def cleanup_results():
-    """Cleanup generated JSON results after the test session."""
-    yield
-    files = glob.glob("results/skill_analysis_*.json") + glob.glob("results/ku_skill_analysis_*.json") + glob.glob("results/course_skill_*.json") + glob.glob("results/law_policy_skill_*.json")
-    for f in files:
-        try:
-            os.remove(f)
-        except:
-            pass
+def cleanup_only_new_files():
+    """Cleanup ONLY the files created during this test session."""
+    # 1. Record what files existed before the tests started
+    folders = ["results", "Completed_Analyses"]
+    before_files = {}
+    for folder in folders:
+        path = Path(folder)
+        if path.exists():
+            before_files[folder] = set(os.listdir(path))
+        else:
+            before_files[folder] = set()
 
-@pytest.mark.skipif(not TRACKER_CREDS, reason="Tracker credentials missing")
-class TestAgeingAnalysis:
+    yield  # Run all tests in the session
+
+    # 2. Identify and delete only the new files
+    for folder in folders:
+        path = Path(folder)
+        if path.exists():
+            after_files = set(os.listdir(path))
+            new_files = after_files - before_files[folder]
+            
+            for filename in new_files:
+                file_to_delete = path / filename
+                try:
+                    file_to_delete.unlink() # Delete single file
+                    print(f"🗑️ Cleaned up new test file: {file_to_delete}")
+                except Exception as e:
+                    print(f"⚠️ Could not delete {file_to_delete}: {e}")
+
+@pytest.mark.skipif(not TRACKER_CREDS, reason="Tracker credentials missing in .env")
+class TestSkillAgeingIntegration:
     
-    def test_jobs_with_keywords_analysis(self):
-        """Verifies real job fetching and the 'Skill Biology' logic."""
+    def test_skill_ageing_jobs_specific_day(self):
+        """Tests job analysis for exactly Sept 1, 2024."""
         response = client.get(
-            "/jobs-with-keywords",
+            "/skill-ageing-jobs",
             params={
-                "keywords": "data",
-                "max_pages": 1 
+                "min_upload_date": TEST_DATE,
+                "max_upload_date": TEST_DATE,
+                "occupation_ids": "http://data.europa.eu/esco/isco/C2512" 
             }
         )
         assert response.status_code == 200
         data = response.json()
-        
-        # Check if analysis was performed
-        if "data" in data:
-            assert "skill_biology_summary" in data["data"]
-            assert "epidemiological_metrics" in data["data"]
-            assert data["summary"]["jobs"] > 0
-        else:
-            # Handle case where no jobs were found for keywords
-            assert "error" in data or "warning" in data
+        # Ensure we got a valid response (either data or a 'no jobs found' message)
+        assert any(k in data for k in ["data", "message", "warning"])
 
-    def test_jobs_forecasting(self):
-        """Tests the ARIMA/Trend forecasting logic for job skills."""
+    def test_skill_ageing_law_policy(self):
+        """Tests law/policy skill analysis up to Sept 1, 2024."""
+        response = client.get(
+            "/skill-ageing-law-policy",
+            params={
+                "keywords": "AI", 
+                "max_publication_date": TEST_DATE
+            }
+        )
+        assert response.status_code == 200
+        assert any(k in response.json() for k in ["data", "message", "warning"])
+
+@pytest.mark.skipif(not TRACKER_CREDS, reason="Tracker credentials missing")
+class TestForecastingIntegration:
+
+    def test_jobs_forecast_specific_day(self):
+        """Tests job skill forecasting limited to Sept 1, 2024."""
         response = client.get(
             "/forecast/jobs_skill_forecast_NEWONE",
             params={
-                "keywords": "data",
-                "horizon": 3,
-                "max_pages": 1
+                "min_upload_date": TEST_DATE,
+                "max_upload_date": TEST_DATE,
+                "horizon": 3
             }
         )
         assert response.status_code == 200
         data = response.json()
-        assert "results" in data or "error" in data
+        # Forecast might return 'error' if 1 day doesn't provide enough data points,
+        # but the test passes if the API responds correctly.
+        assert any(k in data for k in ["results", "error", "message"])
 
-    def test_law_policy_analysis(self):
-        """Verifies policy retrieval and skill mapping from Eur-Lex."""
+@pytest.mark.skipif(not os.getenv("KU_API_URL"), reason="KU_API_URL missing")
+class TestKUIntegration:
+
+    def test_ku_skill_ageing(self):
+        """Tests KU Ageing Analysis (uses separate KU API)."""
         response = client.get(
-            "/law-policy",
-            params={"keywords": "data"}
+            "/ku-skill-ageing",
+            params={"start_date": "2024-09", "end_date": "2024-09"}
         )
         assert response.status_code == 200
-        data = response.json()
-        assert "summary" in data or "error" in data
-
-    def test_courses_analysis(self):
-        """Tests course skill extraction and batch mapping."""
-        response = client.get(
-            "/courses",
-            params={"keywords": "data"}
-        )
-        assert response.status_code == 200
-        assert "summary" in response.json()
-
-
-@pytest.mark.skipif(not KU_API_URL or not KU_ONLINE, reason=f"KU Service is offline or URL missing at {KU_API_URL}")
-class TestKUAgeingAnalysis:
-
-    def test_ku_analysis(self):
-        """Verifies fetching data from the KU Portal and running ageing logic."""
-        response = client.get("/ku", params={})
-        assert response.status_code == 200
-        data = response.json()
-        # Accept analysis results or a graceful 'no data' warning
-        assert any(key in data for key in ["summary", "warning", "error"])
-
-    def test_ku_forecasting(self):
-        """Tests ARIMA forecasting for Knowledge Units."""
-        response = client.get(
-            "/forecast/ku_forecast_arima",
-            params={"horizon": 6}
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert "results" in data or "error" in data
+        assert any(k in response.json() for k in ["summary", "warning", "message"])

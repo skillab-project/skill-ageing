@@ -15,11 +15,17 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 from typing import Optional
+from ageing_forecasting import router as forecasting_router
+
 
 # === Load environment variables ===
 load_dotenv()
 
-app = FastAPI(title="Skill Tracker API")
+app = FastAPI(
+    title="Skill Ageing API",
+    root_path="/skill-ageing"
+)
+app.include_router(forecasting_router)
 
 print("🧩 TRACKER_API =", os.getenv("TRACKER_API"))
 print("🧩 TRACKER_USERNAME =", os.getenv("TRACKER_USERNAME"))
@@ -117,7 +123,7 @@ def run_skill_analysis_from_list(job_list):
 
     print(f"📊 Unique skills found: {len(skill_occurrences)}")
 
-    combined_index = pd.date_range(start="2020-01-01", end="2025-12-31", freq="M")
+    combined_index = pd.date_range(start="2020-01-01", end="2025-12-31", freq="ME")
 
     def get_slope(ts):
         if len(ts) < 3:
@@ -138,7 +144,7 @@ def run_skill_analysis_from_list(job_list):
         recent_use = df_s["date"].max().year > 2022
         immunity  = "High" if total_jobs > 20 and recent_use else "Low"
 
-        s     = pd.Series(1, index=pd.to_datetime(dates)).resample("M").sum().reindex(combined_index, fill_value=0)
+        s     = pd.Series(1, index=pd.to_datetime(dates)).resample("ME").sum().reindex(combined_index, fill_value=0)
         slope = get_slope(s)
         trend = "Declining" if slope < -0.01 else ("Rising" if slope > 0.01 else "Stable")
 
@@ -157,7 +163,7 @@ def run_skill_analysis_from_list(job_list):
     print("📈 Building time series matrix...")
     tag_series = {}
     for skill, dates in skill_occurrences.items():
-        s = pd.Series(1, index=pd.to_datetime(dates)).resample("M").sum().reindex(combined_index, fill_value=0)
+        s = pd.Series(1, index=pd.to_datetime(dates)).resample("ME").sum().reindex(combined_index, fill_value=0)
         tag_series[skill] = s
 
     all_tags_df   = pd.DataFrame(tag_series).fillna(0)
@@ -308,7 +314,7 @@ def run_skill_analysis_from_list(job_list):
 #  /skill-ageing
 # ============================================================
 
-@app.get("/skill-ageing")
+@app.get("/skill-ageing-jobs")
 def analyze_skills(
     occupation_ids:  Optional[str] = Query(None, description="Comma-separated occupation IDs"),
     source:          Optional[str] = Query(None, description="Optional source filter (e.g. linkedin)"),
