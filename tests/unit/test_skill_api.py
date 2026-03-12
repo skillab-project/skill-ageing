@@ -20,16 +20,17 @@ def file_tracker():
             print(f"🗑️ Deleted test file: {file_path}")
 
 
-
 def test_run_skill_analysis_logic(file_tracker):
     """Test the core logic and register the random result file for deletion."""
     mock_data = [{"upload_date": "2023-01-01", "skills": ["Python"]}]
     
     result = run_skill_analysis_from_list(mock_data)
     
-    file_tracker.append(result["file_saved"])
+    if "file_saved" in result:
+        file_tracker.append(result["file_saved"])
     
     assert result["data"]["total_jobs_analyzed"] == 1
+    assert result["summary"]["Total Skills Found"] == 1
 
 @patch("requests.post")
 def test_analyze_jobs_endpoint(mock_post, file_tracker):
