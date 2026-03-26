@@ -7,8 +7,15 @@ services:
     environment:
       - TRACKER_API=https://skillab-tracker.csd.auth.gr/api
       - KU_API_URL=https://se.uom.gr/skillab-public-ku-detection
+    volumes:
+      - skill-ageing_analyses:/app/Completed_Analyses
     restart: unless-stopped
     ports:
       - '8002:8000'
+    labels:
+      io.portainer.accesscontrol.teams: skillab-all
+
+volumes:
+  giant-component-networks_analyses:
     labels:
       io.portainer.accesscontrol.teams: skillab-all
