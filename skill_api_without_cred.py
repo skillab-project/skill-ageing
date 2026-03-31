@@ -275,7 +275,7 @@ def run_skill_analysis_from_list(job_list):
         pct_change    = (100 * (incidence - old_incidence) / old_incidence
                          if old_incidence > 0 else (999 if incidence > 0 else 0))
         ip_ratio        = incidence / total_jobs if total_jobs else 0
-        recent_activity = series[series.index >= datetime(2023, 7, 1)].sum()
+        recent_activity = series[series.index >= datetime.datetime(2023, 7, 1)].sum()
         is_dead         = recent_activity == 0
         revival         = "Yes" if old_incidence < incidence and old_incidence > 0 else "No"
         mortality_ratio = (incidence / (total_jobs - incidence)
