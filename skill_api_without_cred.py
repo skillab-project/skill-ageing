@@ -16,7 +16,6 @@ from dotenv import load_dotenv
 from typing import Optional
 from ageing_forecasting import router as forecasting_router
 import datetime
-from datetime import datetime
 
 
 # === Load environment variables ===
