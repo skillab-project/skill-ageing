@@ -16,6 +16,6 @@ services:
       io.portainer.accesscontrol.teams: skillab-all
 
 volumes:
-  giant-component-networks_analyses:
+  skill-ageing_analyses:
     labels:
       io.portainer.accesscontrol.teams: skillab-all
