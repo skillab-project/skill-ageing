@@ -54,7 +54,7 @@ class TestSkillAgeingIntegration:
             params={
                 "min_upload_date": TEST_DATE,
                 "max_upload_date": TEST_DATE,
-                "occupation_ids": "http://data.europa.eu/esco/isco/C2512" 
+                "occupation_ids": "http://data.europa.eu/esco/isco/C1345" 
             }
         )
         assert response.status_code == 200
@@ -67,7 +67,7 @@ class TestSkillAgeingIntegration:
         response = client.get(
             "/skill-ageing-law-policy",
             params={
-                "keywords": "AI", 
+                "keywords": "data", 
                 "max_publication_date": TEST_DATE
             }
         )
@@ -82,8 +82,7 @@ class TestForecastingIntegration:
         response = client.get(
             "/forecast/jobs_skill_forecast_NEWONE",
             params={
-                "min_upload_date": TEST_DATE,
-                "max_upload_date": TEST_DATE,
+                "occupation_ids": "http://data.europa.eu/esco/isco/C1345",
                 "horizon": 3
             }
         )
