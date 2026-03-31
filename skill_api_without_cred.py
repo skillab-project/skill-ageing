@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from typing import Optional
 from ageing_forecasting import router as forecasting_router
 import datetime
+from datetime import datetime
 
 
 # === Load environment variables ===
@@ -122,35 +123,26 @@ def _save_cache(file_path: Path, result: dict):
 # ============================================================
 
 def run_skill_analysis_from_list(job_list):
-    print(f"🔬 run_skill_analysis_from_list: Processing {len(job_list)} items")
+    print(f"🔬 run_skill_analysis_from_list: {len(job_list)} items")
+
     skill_occurrences = defaultdict(list)
-    
     for job in job_list:
         try:
             date_str = job.get("upload_date")
             if not date_str:
                 continue
-            
-            # Use pandas to parse the date - avoids datetime/datetime import conflicts
-            date = pd.to_datetime(date_str)
-            
+            date = datetime.strptime(str(date_str).split("T")[0], "%Y-%m-%d")
             skills = job.get("skills", [])
             if not isinstance(skills, list):
                 continue
-                
             for skill in skills:
                 skill_occurrences[skill].append(date)
-        except Exception as e:
-            print(f"⚠️ Error parsing job record: {e}")
+        except Exception:
             continue
 
     print(f"📊 Unique skills found: {len(skill_occurrences)}")
 
-    # Handle Pandas frequency alias (Pandas 2.2+ uses ME, older uses M)
-    try:
-        combined_index = pd.date_range(start="2020-01-01", end="2025-12-31", freq="ME")
-    except ValueError:
-        combined_index = pd.date_range(start="2020-01-01", end="2025-12-31", freq="M")
+    combined_index = pd.date_range(start="2020-01-01", end="2025-12-31", freq="M")
 
     def get_slope(ts):
         if len(ts) < 3:
@@ -159,48 +151,179 @@ def run_skill_analysis_from_list(job_list):
         y = ts.values.reshape(-1, 1)
         return LinearRegression().fit(X, y).coef_[0][0]
 
+    # ── Biology summary ──────────────────────────────────────
+    print("🧬 Computing skill biology summary...")
     biology_summary = []
-    tag_series = {}
-
     for skill, dates in skill_occurrences.items():
-        s_raw = pd.Series(1, index=pd.to_datetime(dates))
-        # Match the frequency chosen above
-        freq = combined_index.freqstr
-        s_resampled = s_raw.resample(freq).sum().reindex(combined_index, fill_value=0)
-        tag_series[skill] = s_resampled
+        df_s = pd.DataFrame(dates, columns=["date"])
+        df_s["year_month"] = df_s["date"].dt.to_period("M")
+        birth     = df_s["date"].min()
+        peak      = df_s["year_month"].value_counts().idxmax()
+        total_jobs = len(df_s)
+        recent_use = df_s["date"].max().year > 2022
+        immunity  = "High" if total_jobs > 20 and recent_use else "Low"
 
-        total_jobs = len(dates)
-        slope = get_slope(s_resampled)
-        
+        s     = pd.Series(1, index=pd.to_datetime(dates)).resample("M").sum().reindex(combined_index, fill_value=0)
+        slope = get_slope(s)
+        trend = "Declining" if slope < -0.01 else ("Rising" if slope > 0.01 else "Stable")
+
         biology_summary.append({
             "Skill": skill,
-            "Date of Birth": min(dates).strftime("%Y-%m-%d") if dates else "N/A",
+            "Date of Birth": birth.strftime("%Y-%m-%d"),
+            "Peak Activity Date": str(peak),
             "Total Jobs": total_jobs,
-            "Trend": "Rising" if slope > 0.01 else ("Declining" if slope < -0.01 else "Stable"),
+            "Immunity Score": immunity,
+            "Trend": trend,
             "Slope": round(slope, 4)
         })
+    print(f"   → {len(biology_summary)} skills in biology summary")
+
+    # ── Time series matrix ───────────────────────────────────
+    print("📈 Building time series matrix...")
+    tag_series = {}
+    for skill, dates in skill_occurrences.items():
+        s = pd.Series(1, index=pd.to_datetime(dates)).resample("M").sum().reindex(combined_index, fill_value=0)
+        tag_series[skill] = s
+
+    all_tags_df   = pd.DataFrame(tag_series).fillna(0)
+    # Keep skills with at least 10 total occurrences
+    filtered_tags = [t for t in all_tags_df.columns if all_tags_df[t].sum() >= 10]
+    print(f"   → {len(filtered_tags)} skills pass the ≥10 threshold")
+
+    # ── Competing Skills  ────────────────────────────────────
+    # FIX: limit to top-50 by total frequency → max 1,225 pairs instead of ~125k
+    print("⚔️  Computing competing skills (top-50, max 1,225 pairs)...")
+    top50 = sorted(filtered_tags, key=lambda x: all_tags_df[x].sum(), reverse=True)[:50]
+    competing_results = []
+
+    if len(top50) >= 2:
+        mat   = all_tags_df[top50].values          # shape (n_months, 50)
+        corr_matrix = np.corrcoef(mat.T)           # (50, 50) — vectorised, instant
+
+        for i, tag1 in enumerate(top50):
+            for j, tag2 in enumerate(top50):
+                if j <= i:
+                    continue
+                s1, s2  = mat[:, i], mat[:, j]
+                overlap = (s1 > 0) & (s2 > 0)
+                if overlap.sum() < 5:
+                    continue
+                corr = corr_matrix[i, j]
+                if np.isfinite(corr) and corr < -0.5:
+                    competing_results.append({
+                        "Skill A": tag1, "Skill B": tag2,
+                        "Correlation": round(float(corr), 3)
+                    })
+    print(f"   → {len(competing_results)} competing pairs found")
+
+    # ── Inverse Trends  ─────────────────────────────────────
+    # FIX: limit to top-30 → max 435 pairs instead of 4,950
+    print("📉 Computing inverse trends (top-30, max 435 pairs)...")
+    top30 = sorted(filtered_tags, key=lambda x: all_tags_df[x].sum(), reverse=True)[:30]
+    inverse_results = []
+
+    for tag1, tag2 in combinations(top30, 2):
+        s1, s2 = all_tags_df[tag1], all_tags_df[tag2]
+        mask   = (s1 > 0) & (s2 > 0)
+        if mask.sum() < 6:
+            continue
+        slope1 = get_slope(s1[mask])
+        slope2 = get_slope(s2[mask])
+        if slope1 < -0.005 and slope2 > 0.005:
+            inverse_results.append({
+                "Declining Skill": tag1, "Competing Skill": tag2,
+                "Slope A": round(slope1, 4), "Slope B": round(slope2, 4),
+                "Overlapping Months": int(mask.sum())
+            })
+    print(f"   → {len(inverse_results)} inverse-trend pairs found")
+
+    # ── Rapid Obsolescence  ─────────────────────────────────
+    print("💥 Computing rapid obsolescence...")
+    rapid_drops = []
+    for tag, series in tag_series.items():
+        if (series > 0).sum() < 12:
+            continue
+        peak_value = series.max()
+        if peak_value < 5:
+            continue
+        peak_idx  = series.idxmax()
+        peak_loc  = series.index.get_loc(peak_idx)
+        post_peak = series.iloc[peak_loc:peak_loc + 7]
+        drop_ratio = (peak_value - post_peak.min()) / peak_value
+        if drop_ratio >= 0.3:
+            rapid_drops.append({
+                "Skill": tag,
+                "Peak Month": peak_idx.strftime("%Y-%m"),
+                "Peak Value": int(peak_value),
+                "Min Value After Peak": int(post_peak.min()),
+                "Drop %": round(drop_ratio * 100, 2)
+            })
+    print(f"   → {len(rapid_drops)} rapidly obsolete skills")
+
+    # ── Epidemiological Metrics  ────────────────────────────
+    print("🦠 Computing epidemiological metrics...")
+    epi_metrics = []
+    shock_start, shock_end = pd.Timestamp("2023-01-01"), pd.Timestamp("2023-12-31")
+    old_start,   old_end   = pd.Timestamp("2022-01-01"), pd.Timestamp("2022-12-31")
+
+    for tag, series in tag_series.items():
+        series      = series.fillna(0)
+        total_jobs  = series.sum()
+        if total_jobs == 0:
+            continue
+        incidence     = series.loc[shock_start:shock_end].sum()
+        old_incidence = series.loc[old_start:old_end].sum()
+        pct_change    = (100 * (incidence - old_incidence) / old_incidence
+                         if old_incidence > 0 else (999 if incidence > 0 else 0))
+        ip_ratio        = incidence / total_jobs if total_jobs else 0
+        recent_activity = series[series.index >= datetime(2023, 7, 1)].sum()
+        is_dead         = recent_activity == 0
+        revival         = "Yes" if old_incidence < incidence and old_incidence > 0 else "No"
+        mortality_ratio = (incidence / (total_jobs - incidence)
+                           if (total_jobs - incidence) > 0 else 999)
+        was_active  = old_incidence > 0 or incidence > 0
+        cfr         = 1.0 if (was_active and is_dead) else 0.0
+        attack_rate = (series > 0).sum() / len(series)
+
+        epi_metrics.append({
+            "Skill": tag,
+            "Total Jobs": int(total_jobs),
+            "Incidence (2023)": int(incidence),
+            "Incidence (2022)": int(old_incidence),
+            "% Change in Incidence": round(pct_change, 2),
+            "Incidence : Prevalence": round(ip_ratio, 4),
+            "Mortality Risk": "☠️" if is_dead else "🟢",
+            "Revived?": revival,
+            "Incidence : Mortality Ratio": round(mortality_ratio, 2),
+            "CFR": round(cfr, 2),
+            "Attack Rate": round(attack_rate, 4)
+        })
+    print(f"   → {len(epi_metrics)} skills with epi metrics")
 
     output = {
         "skill_biology_summary": biology_summary,
-        "total_jobs_analyzed": len(job_list),
-        "competing_skills": [],
-        "inverse_trends": [],
-        "rapid_obsolescence": [],
-        "epidemiological_metrics": []
+        "competing_skills":      competing_results,
+        "inverse_trends":        inverse_results,
+        "rapid_obsolescence":    rapid_drops,
+        "epidemiological_metrics": epi_metrics,
+        "total_jobs_analyzed":   len(job_list)
     }
 
-    # === SNAPSHOT SAVING LOGIC (Required by your Tests) ===
     Path("results").mkdir(parents=True, exist_ok=True)
     filename = f"results/skill_analysis_{uuid.uuid4().hex[:6]}.json"
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
 
+    print(f"✅ Analysis complete — saved to {filename}")
     return {
-        "message": "✅ Skill analysis complete",
+        "message":    "✅ Skill analysis complete",
         "file_saved": filename,
         "summary": {
-            "Total Skills Found": len(biology_summary),
-            "Jobs Retrieved": len(job_list)
+            "Total Skills Found":        len(biology_summary),
+            "Competing Skill Pairs":     len(competing_results),
+            "Inverse Trend Pairs":       len(inverse_results),
+            "Rapidly Obsolete Skills":   len(rapid_drops),
+            "Epidemiological Metrics":   len(epi_metrics),
         },
         "data": output
     }
